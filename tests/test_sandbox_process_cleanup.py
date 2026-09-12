@@ -50,17 +50,28 @@ def _descendant_program(pid_file, marker, delay=0.4):
     return descendant
 
 
+def _parent_with_ready_descendant(descendant, pid_file, tail):
+    return (
+        "import pathlib,subprocess,sys,time\n"
+        f"subprocess.Popen([sys.executable,'-c',{descendant!r}])\n"
+        f"pid_file=pathlib.Path({str(pid_file)!r})\n"
+        "for _ in range(200):\n"
+        "    if pid_file.exists():\n"
+        "        break\n"
+        "    time.sleep(0.01)\n"
+        + tail
+    )
+
+
 def test_timeout_terminates_descendant_processes(tmp_path):
     pid_file = pathlib.Path(tmp_path) / 'grandchild.pid'
     marker = pathlib.Path(tmp_path) / 'descendant-survived'
     descendant = _descendant_program(pid_file, marker)
-    parent = (
-        "import subprocess,sys,time; "
-        f"subprocess.Popen([sys.executable,'-c',{descendant!r}]); time.sleep(30)"
-    )
+    parent = _parent_with_ready_descendant(descendant, pid_file, 'time.sleep(30)')
 
     try:
         result = _run_program(parent, tmp_path)
+        assert pid_file.exists()
         time.sleep(0.6)
 
         assert result['reason'] == 'timeout'
@@ -73,13 +84,11 @@ def test_normal_exit_terminates_descendant_processes(tmp_path):
     pid_file = pathlib.Path(tmp_path) / 'grandchild.pid'
     marker = pathlib.Path(tmp_path) / 'descendant-survived'
     descendant = _descendant_program(pid_file, marker)
-    parent = (
-        "import subprocess,sys,time; "
-        f"subprocess.Popen([sys.executable,'-c',{descendant!r}]); time.sleep(0.05)"
-    )
+    parent = _parent_with_ready_descendant(descendant, pid_file, '')
 
     try:
         result = _run_program(parent, tmp_path, timeout=1)
+        assert pid_file.exists()
         time.sleep(0.6)
 
         assert result['reason'] is None
@@ -93,15 +102,16 @@ def test_output_limit_terminates_descendant_processes(tmp_path):
     pid_file = pathlib.Path(tmp_path) / 'grandchild.pid'
     marker = pathlib.Path(tmp_path) / 'descendant-survived'
     descendant = _descendant_program(pid_file, marker)
-    parent = (
-        "import subprocess,sys,time; "
-        f"subprocess.Popen([sys.executable,'-c',{descendant!r}]); "
-        "sys.stdout.write('x' * 256); sys.stdout.flush(); time.sleep(30)"
+    parent = _parent_with_ready_descendant(
+        descendant,
+        pid_file,
+        "sys.stdout.write('x' * 256); sys.stdout.flush(); time.sleep(30)",
     )
 
     try:
         with patch.object(sandbox_runner, 'MAX_OUTPUT_LEN', 64):
             result = _run_program(parent, tmp_path, timeout=1)
+        assert pid_file.exists()
         time.sleep(0.6)
 
         assert result['reason'] == 'stdout_limit'
@@ -125,10 +135,7 @@ def test_immediate_descendant_is_created_only_after_job_attachment(tmp_path):
     pid_file = pathlib.Path(tmp_path) / 'grandchild.pid'
     marker = pathlib.Path(tmp_path) / 'descendant-survived'
     descendant = _descendant_program(pid_file, marker, delay=0.4)
-    parent = (
-        "import subprocess,sys; "
-        f"subprocess.Popen([sys.executable,'-c',{descendant!r}])"
-    )
+    parent = _parent_with_ready_descendant(descendant, pid_file, '')
     original_create_job = sandbox_runner._create_process_job
 
     def delayed_create_job(process):
@@ -142,6 +149,7 @@ def test_immediate_descendant_is_created_only_after_job_attachment(tmp_path):
             side_effect=delayed_create_job,
         ):
             result = _run_program(parent, tmp_path, timeout=1)
+        assert pid_file.exists()
         time.sleep(0.6)
 
         assert result['reason'] is None
@@ -178,3 +186,6 @@ def test_job_setup_failure_stops_suspended_user_process(tmp_path):
     assert not marker.exists()
     assert captured and captured[0].poll() is not None
     assert captured[0]._handle.closed
+    assert captured[0].stdin.closed
+    assert captured[0].stdout.closed
+    assert captured[0].stderr.closed
