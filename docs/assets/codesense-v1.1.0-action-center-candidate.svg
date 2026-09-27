@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000" role="img" aria-labelledby="title desc">
+  <title id="title">CodeSense 行动中心候选更新摘要</title>
+  <desc id="desc">v1.1.0 baseline, post-review candidate, 19 independently verifiable deliveries, not released.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#071426"/>
+      <stop offset="1" stop-color="#102d4b"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#4de1c1"/>
+      <stop offset="1" stop-color="#6aa8ff"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="12" stdDeviation="18" flood-color="#020814" flood-opacity=".35"/>
+    </filter>
+    <style>
+      .sans { font-family: "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif; }
+      .mono { font-family: Consolas, "SFMono-Regular", monospace; }
+      .muted { fill: #9bb2c9; }
+      .white { fill: #f5f9ff; }
+      .card { fill: #102942; stroke: #284663; stroke-width: 2; }
+      .small { font-size: 24px; }
+      .body { font-size: 28px; }
+      .label { font-size: 22px; letter-spacing: 2px; }
+    </style>
+  </defs>
+
+  <rect width="1600" height="1000" fill="url(#bg)"/>
+  <circle cx="1430" cy="115" r="260" fill="#245184" opacity=".16"/>
+  <circle cx="120" cy="920" r="210" fill="#2aa38f" opacity=".10"/>
+
+  <g class="sans">
+    <text x="100" y="105" class="label" fill="#6ee8cf">CODESENSE / DAILY PRODUCT ITERATION</text>
+    <text x="100" y="185" class="white" font-size="70" font-weight="700">行动中心 · 候选更新</text>
+    <text x="100" y="235" class="muted" font-size="30">把学生、教师与管理员的下一步汇入一个受权限保护的队列</text>
+
+    <rect x="1080" y="78" width="390" height="170" rx="26" fill="#0b1d33" stroke="#4de1c1" stroke-width="3" filter="url(#shadow)"/>
+    <text x="1118" y="125" class="label" fill="#4de1c1">VERSIONED CANDIDATE</text>
+    <text x="1118" y="178" class="mono white" font-size="34">v1.1.0 baseline</text>
+    <text x="1118" y="220" class="mono" fill="#ffd48a" font-size="30">post-review · 未发布</text>
+
+    <rect x="100" y="300" width="420" height="240" rx="26" class="card" filter="url(#shadow)"/>
+    <text x="140" y="355" class="label" fill="#6aa8ff">交付规模</text>
+    <text x="140" y="445" class="white" font-size="90" font-weight="700">19</text>
+    <text x="300" y="430" class="body white">项独立</text>
+    <text x="300" y="470" class="body white">可验证交付</text>
+    <text x="140" y="510" class="small muted">页面 · API · 服务 · 权限 · 可观测性</text>
+
+    <rect x="560" y="300" width="420" height="240" rx="26" class="card" filter="url(#shadow)"/>
+    <text x="600" y="355" class="label" fill="#4de1c1">覆盖角色</text>
+    <text x="600" y="430" class="body white">学生</text>
+    <text x="600" y="480" class="body white">教师</text>
+    <text x="600" y="530" class="body white">管理员</text>
+    <path d="M760 414h150M760 464h150M760 514h150" stroke="url(#accent)" stroke-width="8" stroke-linecap="round"/>
+    <circle cx="930" cy="414" r="10" fill="#4de1c1"/>
+    <circle cx="930" cy="464" r="10" fill="#6aa8ff"/>
+    <circle cx="930" cy="514" r="10" fill="#ffd48a"/>
+
+    <rect x="1020" y="300" width="480" height="240" rx="26" class="card" filter="url(#shadow)"/>
+    <text x="1060" y="355" class="label" fill="#ffd48a">安全边界</text>
+    <text x="1060" y="415" class="body white">只读聚合 · 无模型调用</text>
+    <text x="1060" y="460" class="body white">角色范围 · 本地链接</text>
+    <text x="1060" y="505" class="body white">正文/代码/联系方式不出队列</text>
+
+    <text x="100" y="635" class="label" fill="#9bb2c9">FLOW SURFACES</text>
+    <path d="M100 670H1500" stroke="#284663" stroke-width="2"/>
+
+    <g transform="translate(100 720)">
+      <rect width="420" height="170" rx="22" fill="#0c2239" stroke="#4de1c1" stroke-width="2"/>
+      <text x="32" y="48" class="label" fill="#4de1c1">01 / STUDENT</text>
+      <text x="32" y="92" class="body white">提交 · 复核 · 会话 · 通知</text>
+      <text x="32" y="135" class="small muted">下一步明确，继续学习不迷路</text>
+    </g>
+    <g transform="translate(590 720)">
+      <rect width="420" height="170" rx="22" fill="#0c2239" stroke="#6aa8ff" stroke-width="2"/>
+      <text x="32" y="48" class="label" fill="#6aa8ff">02 / TEACHER</text>
+      <text x="32" y="92" class="body white">复核队列 · AI 建议健康</text>
+      <text x="32" y="135" class="small muted">只看管理班级与当前任务</text>
+    </g>
+    <g transform="translate(1080 720)">
+      <rect width="420" height="170" rx="22" fill="#0c2239" stroke="#ffd48a" stroke-width="2"/>
+      <text x="32" y="48" class="label" fill="#ffd48a">03 / ADMIN</text>
+      <text x="32" y="92" class="body white">反馈 · 能力分析 · 降级来源</text>
+      <text x="32" y="135" class="small muted">异常可见，但敏感正文不扩散</text>
+    </g>
+
+    <text x="100" y="955" class="small muted">验证：6 项行动中心测试通过 · 65 项相关回归通过 · 浏览器 390px 无横向溢出 · 生产未部署</text>
+  </g>
+</svg>

@@ -1,0 +1,81 @@
+{% extends "layout.html" %}
+
+{% block title %}学习会话概览 - {{ assignment.title }} - CodeSense 酷森思{% endblock %}
+
+{% block content %}
+<main class="container py-4" aria-labelledby="session-overview-title">
+    <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
+        <div>
+            <p class="text-muted small mb-1">教师只读视图</p>
+            <h1 id="session-overview-title" class="h3 mb-2">学习会话概览</h1>
+            <p class="text-muted mb-0">{{ assignment.title }} · 状态来自会话活动日志，不等同于精确思考时长。</p>
+        </div>
+        <a class="btn btn-outline-secondary" href="{{ url_for('assignments.teacher_assignments') }}">
+            <i class="bi bi-arrow-left me-1" aria-hidden="true"></i>返回作业管理
+        </a>
+    </div>
+
+    <nav class="d-flex flex-wrap gap-2 mb-3" aria-label="会话状态筛选">
+        <a class="btn btn-sm {% if not lifecycle_filter %}btn-primary{% else %}btn-outline-primary{% endif %}"
+           href="{{ url_for('thinking.assignment_sessions_view', assignment_id=assignment.id) }}">全部</a>
+        {% for status in lifecycle_statuses %}
+        {% set label = {'active': '正在学习', 'idle': '暂时停留', 'completed': '已完成', 'abandoned': '已放弃'}.get(status, status) %}
+        <a class="btn btn-sm {% if lifecycle_filter == status %}btn-primary{% else %}btn-outline-primary{% endif %}"
+           href="{{ url_for('thinking.assignment_sessions_view', assignment_id=assignment.id, lifecycle_status=status) }}">
+            {{ label }}
+        </a>
+        {% endfor %}
+    </nav>
+
+    {% if sessions %}
+    <div class="table-responsive bg-white rounded shadow-sm">
+        <table class="table table-hover align-middle mb-0">
+            <caption class="visually-hidden">学生学习会话状态列表</caption>
+            <thead>
+                <tr>
+                    <th scope="col">学生</th>
+                    <th scope="col">状态</th>
+                    <th scope="col">阶段进度</th>
+                    <th scope="col">最近活动</th>
+                    <th scope="col">时间口径</th>
+                    <th scope="col">下一步</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in sessions %}
+                {% set lifecycle = row.lifecycle %}
+                {% set status_label = {'active': '正在学习', 'idle': '暂时停留', 'completed': '已完成', 'abandoned': '已放弃'}.get(lifecycle.status, lifecycle.status) %}
+                <tr>
+                    <th scope="row">
+                        {{ row.student_name }}
+                        <span class="d-block text-muted small">{{ row.student_id }}</span>
+                    </th>
+                    <td>
+                        <span class="badge rounded-pill text-bg-{% if lifecycle.status == 'active' %}success{% elif lifecycle.status == 'completed' %}primary{% elif lifecycle.status == 'idle' %}warning{% else %}secondary{% endif %}">
+                            {{ status_label }}
+                        </span>
+                    </td>
+                    <td>
+                        <div class="small fw-semibold">{{ lifecycle.stage_label }}</div>
+                        <div class="progress mt-1" role="progressbar" aria-label="{{ row.student_name }}阶段进度"
+                             aria-valuenow="{{ lifecycle.progress_percent }}" aria-valuemin="0" aria-valuemax="100">
+                            <div class="progress-bar" style="width: {{ lifecycle.progress_percent }}%"></div>
+                        </div>
+                        <span class="small text-muted">{{ lifecycle.progress_percent }}%</span>
+                    </td>
+                    <td class="small">{{ lifecycle.last_activity_at or '暂无记录' }}</td>
+                    <td class="small">{{ lifecycle.elapsed_label }}<br>{{ lifecycle.elapsed_seconds }} 秒</td>
+                    <td class="small">{{ lifecycle.next_action }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="alert alert-light border" role="status">
+        <i class="bi bi-inbox me-2" aria-hidden="true"></i>
+        {% if lifecycle_filter %}当前筛选下没有学习会话。{% else %}这份作业还没有学习会话。{% endif %}
+    </div>
+    {% endif %}
+</main>
+{% endblock %}

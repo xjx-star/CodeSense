@@ -1,0 +1,355 @@
+"""Bounded, assignment-scoped knowledge retrieval for student answers.
+
+This is an explicit-evidence, request-scoped vector prototype, not a
+persistent vector database.  It reads only the knowledge points attached to
+the current assignment and returns stable, non-sensitive citations plus a
+deterministic fallback state.  Keeping the index adapter here makes a future
+persistent implementation interchangeable without changing the student-facing
+answer route.
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+
+from models import AssignmentKnowledgePoint, KnowledgePointScore, db
+from services.knowledge_pipeline import KnowledgeDocument, build_offline_pipeline
+from services.knowledge_reliability import (
+    KnowledgePrivacyFilter,
+    KnowledgeQualityMonitor,
+    SlidingWindowRateLimiter,
+    VersionedKnowledgeIndex,
+    build_default_rate_limiter,
+    default_retrieval_timeout_ms,
+)
+from services.knowledge_vector_store import KnowledgeRetrievalTimeout, NgramCountEmbedder
+
+
+MAX_EVIDENCE = 8
+MAX_INDEX_DOCUMENTS = 64
+logger = logging.getLogger(__name__)
+knowledge_pipeline = build_offline_pipeline()
+knowledge_vector_embedder = NgramCountEmbedder()
+NO_KNOWLEDGE_EVIDENCE = {
+    "code": "NO_KNOWLEDGE_EVIDENCE",
+    "message": "当前作业没有已标注知识点，回答仅基于题目和代码。",
+}
+RETRIEVAL_UNAVAILABLE = {
+    "code": "KNOWLEDGE_RETRIEVAL_UNAVAILABLE",
+    "message": "知识证据暂时不可用，回答仅基于题目和代码。",
+}
+RETRIEVAL_TIMEOUT = {
+    "code": "KNOWLEDGE_RETRIEVAL_TIMEOUT",
+    "message": "知识证据检索超时，回答仅基于题目和代码。",
+}
+RETRIEVAL_RATE_LIMITED = {
+    "code": "KNOWLEDGE_RETRIEVAL_RATE_LIMITED",
+    "message": "知识证据请求过于频繁，回答仅基于题目和代码。",
+}
+knowledge_rate_limiter: SlidingWindowRateLimiter = build_default_rate_limiter()
+knowledge_quality_monitor = KnowledgeQualityMonitor()
+
+
+def _created_at_value(record):
+    created_at = getattr(record, "created_at", None)
+    return created_at.isoformat() if created_at else None
+
+
+def _result(
+    status,
+    evidence,
+    candidate_count,
+    started_at,
+    fallback=None,
+    *,
+    retrieval_mode=None,
+    indexed_chunk_count=0,
+    index_revision=None,
+    privacy_filtered_count=0,
+    quality_monitor=None,
+):
+    hit_count = len(evidence)
+    latency_ms = max(0.0, (time.perf_counter() - started_at) * 1000.0)
+    metrics = {
+        "candidate_count": int(candidate_count),
+        "hit_count": hit_count,
+        "retrieval_hit_rate": round(hit_count / candidate_count, 3)
+        if candidate_count
+        else 0.0,
+        "retrieval_latency_ms": round(latency_ms, 2),
+        "citation_completeness": round(
+            sum(1 for item in evidence if item.get("evidence_id") and item.get("citation"))
+            / hit_count,
+            3,
+        ) if hit_count else 0.0,
+        "no_result_fallback": bool(
+            fallback and fallback.get("code") == NO_KNOWLEDGE_EVIDENCE["code"]
+        ),
+        "retrieval_error_fallback": bool(
+            fallback and fallback.get("code") == RETRIEVAL_UNAVAILABLE["code"]
+        ),
+        "retrieval_timeout_fallback": bool(
+            fallback and fallback.get("code") == RETRIEVAL_TIMEOUT["code"]
+        ),
+        "rate_limit_fallback": bool(
+            fallback and fallback.get("code") == RETRIEVAL_RATE_LIMITED["code"]
+        ),
+        "retrieval_mode": retrieval_mode or ("unavailable" if fallback else "unknown"),
+        "indexed_chunk_count": int(indexed_chunk_count),
+        "index_revision": int(index_revision) if index_revision is not None else None,
+        "privacy_filtered_count": int(privacy_filtered_count),
+    }
+    (quality_monitor or knowledge_quality_monitor).record(
+        status=status,
+        mode=metrics["retrieval_mode"],
+        latency_ms=latency_ms,
+        fallback_code=(fallback or {}).get("code"),
+    )
+    return {
+        "status": status,
+        "evidence": evidence,
+        "metrics": metrics,
+        "fallback": fallback,
+    }
+
+
+def retrieve_assignment_knowledge(
+    assignment_id,
+    *,
+    limit=MAX_EVIDENCE,
+    query="",
+    timeout_ms=None,
+    request_key=None,
+    rate_limiter=None,
+    quality_monitor=None,
+):
+    """Retrieve bounded, explicit knowledge evidence for one assignment.
+
+    The retrieval is intentionally assignment-scoped and does not inspect a
+    student's private ``KnowledgePointScore`` rows.  With a query, the
+    replaceable offline index first scores sparse-vector overlap, then tries a
+    title/body keyword fallback, and finally uses the teacher/AI-maintained
+    weight and stable row ID for the legacy priority fallback.  An empty query
+    preserves priority order.
+    """
+
+    started_at = time.perf_counter()
+    try:
+        assignment_id = int(assignment_id)
+    except (TypeError, ValueError):
+        return _result(
+            "no_result",
+            [],
+            0,
+            started_at,
+            NO_KNOWLEDGE_EVIDENCE.copy(),
+            retrieval_mode="no_result",
+            quality_monitor=quality_monitor,
+        )
+
+    limiter = rate_limiter or knowledge_rate_limiter
+    if not limiter.allow(request_key or f"assignment:{assignment_id}"):
+        return _result(
+            "rate_limited",
+            [],
+            0,
+            started_at,
+            RETRIEVAL_RATE_LIMITED.copy(),
+            retrieval_mode="rate_limited",
+            quality_monitor=quality_monitor,
+        )
+
+    try:
+        configured_timeout = (
+            default_retrieval_timeout_ms()
+            if timeout_ms is None
+            else int(timeout_ms)
+        )
+    except (TypeError, ValueError):
+        configured_timeout = default_retrieval_timeout_ms()
+    configured_timeout = max(1, min(configured_timeout, 5000))
+    deadline = time.monotonic() + configured_timeout / 1000.0
+    records = []
+    privacy_filtered_count = 0
+
+    try:
+        bounded_limit = max(1, min(int(limit), MAX_EVIDENCE))
+        records = (
+            AssignmentKnowledgePoint.query
+            .filter_by(assignment_id=assignment_id)
+            .order_by(
+                AssignmentKnowledgePoint.weight.desc(),
+                AssignmentKnowledgePoint.id.asc(),
+            )
+            .limit(MAX_INDEX_DOCUMENTS)
+            .all()
+        )
+        if time.monotonic() > deadline:
+            raise KnowledgeRetrievalTimeout("knowledge record lookup exceeded deadline")
+    except KnowledgeRetrievalTimeout:
+        db.session.rollback()
+        return _result(
+            "timeout",
+            [],
+            len(records),
+            started_at,
+            RETRIEVAL_TIMEOUT.copy(),
+            retrieval_mode="timeout",
+            quality_monitor=quality_monitor,
+        )
+    except Exception:
+        db.session.rollback()
+        logger.exception(
+            "knowledge evidence retrieval failed; using safe answer-only fallback"
+        )
+        return _result(
+            "unavailable",
+            [],
+            0,
+            started_at,
+            RETRIEVAL_UNAVAILABLE.copy(),
+            retrieval_mode="unavailable",
+            quality_monitor=quality_monitor,
+        )
+
+    documents = []
+    for record in records:
+        code = str(record.knowledge_point or "").strip()
+        if not code:
+            continue
+        name = KnowledgePointScore.KNOWLEDGE_POINTS.get(code, code)
+        raw_document = KnowledgeDocument(
+            document_id=f"assignment-kp:{record.id}",
+            title=name,
+            content=f"当前作业显式绑定知识点：{name}（{code}）。",
+            source_type="assignment_knowledge_point",
+            priority=float(record.weight or 0.0),
+            metadata={
+                "created_at": _created_at_value(record),
+                "evidence_id": f"assignment-kp:{record.id}",
+                "record_id": record.id,
+            },
+        )
+        document = KnowledgePrivacyFilter.sanitize_document(raw_document)
+        if document != raw_document:
+            privacy_filtered_count += 1
+        documents.append(document)
+
+    try:
+        chunks = tuple(
+            chunk
+            for document in documents
+            for chunk in knowledge_pipeline.chunker.split(document)
+        )
+        index = VersionedKnowledgeIndex(
+            chunks,
+            embedder=knowledge_vector_embedder,
+            deadline=deadline,
+        )
+        search_result = index.search(query, top_k=bounded_limit)
+        citations = tuple(
+            knowledge_pipeline.citation_builder.build(candidate, rank)
+            for rank, candidate in enumerate(search_result.candidates, start=1)
+        )
+    except KnowledgeRetrievalTimeout:
+        db.session.rollback()
+        return _result(
+            "timeout",
+            [],
+            len(records),
+            started_at,
+            RETRIEVAL_TIMEOUT.copy(),
+            retrieval_mode="timeout",
+            privacy_filtered_count=privacy_filtered_count,
+            quality_monitor=quality_monitor,
+        )
+    except Exception:
+        db.session.rollback()
+        logger.exception(
+            "knowledge vector index failed; using safe answer-only fallback"
+        )
+        return _result(
+            "unavailable",
+            [],
+            len(records),
+            started_at,
+            RETRIEVAL_UNAVAILABLE.copy(),
+            retrieval_mode="unavailable",
+            privacy_filtered_count=privacy_filtered_count,
+            quality_monitor=quality_monitor,
+        )
+    evidence = [
+        {
+            "evidence_id": citation.evidence_id,
+            "citation": citation.citation,
+            "source_type": citation.source_type,
+            "title": citation.title,
+            "content": citation.content,
+            "created_at": citation.metadata.get("created_at"),
+        }
+        for citation in citations
+    ]
+
+    if not evidence:
+        return _result(
+            "no_result",
+            [],
+            len(records),
+            started_at,
+            NO_KNOWLEDGE_EVIDENCE.copy(),
+            retrieval_mode=search_result.mode,
+            indexed_chunk_count=search_result.indexed_chunk_count,
+            index_revision=index.revision.number,
+            privacy_filtered_count=privacy_filtered_count,
+            quality_monitor=quality_monitor,
+        )
+    return _result(
+        "grounded",
+        evidence,
+        len(records),
+        started_at,
+        retrieval_mode=search_result.mode,
+        indexed_chunk_count=search_result.indexed_chunk_count,
+        index_revision=index.revision.number,
+        privacy_filtered_count=privacy_filtered_count,
+        quality_monitor=quality_monitor,
+    )
+
+
+def get_knowledge_quality_snapshot():
+    """Return bounded process metrics without exposing query or student data."""
+
+    return knowledge_quality_monitor.snapshot()
+
+
+def build_knowledge_prompt_context(retrieval):
+    """Create a bounded prompt section that makes citation limits explicit."""
+
+    if retrieval.get("status") != "grounded":
+        fallback = retrieval.get("fallback") or NO_KNOWLEDGE_EVIDENCE
+        return fallback["message"] + " 不要编造知识库引用。"
+
+    lines = [
+        "以下是当前作业已检索到的知识证据。只能使用这些证据，不要扩展为未提供的资料；引用时使用对应标记："
+    ]
+    lines.extend(
+        f"{item['citation']} {item['content']}"
+        for item in retrieval.get("evidence", [])
+    )
+    return "\n".join(lines)
+
+
+def render_knowledge_receipt(retrieval):
+    """Render a deterministic evidence receipt for the final student answer."""
+
+    if retrieval.get("status") != "grounded":
+        fallback = retrieval.get("fallback") or NO_KNOWLEDGE_EVIDENCE
+        return f"\n\n> 知识证据回退：{fallback['message']}"
+
+    lines = ["\n\n### 参考知识证据"]
+    lines.extend(
+        f"- {item['citation']} {item['title']}"
+        for item in retrieval.get("evidence", [])
+    )
+    return "\n".join(lines)

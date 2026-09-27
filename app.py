@@ -15,8 +15,9 @@ import uuid
 from logging.handlers import RotatingFileHandler, TimedRotatingFileHandler
 from logging import FileHandler
 
-from flask import Flask, request, session, flash, redirect, url_for, g, jsonify, render_template
-from flask_login import LoginManager
+from flask import Flask, request, session, flash, redirect, url_for, g, jsonify, render_template, send_file
+from flask_login import LoginManager, current_user
+from flask_wtf.csrf import CSRFError, CSRFProtect
 from werkzeug.middleware.proxy_fix import ProxyFix
 # Flask-Session导入优化
 try:
@@ -40,6 +41,9 @@ from config import config
 from models import db, init_db
 from services.api_keys import api_keys  # 导入 API 密钥管理器
 from utils.timezone import format_display_datetime
+
+
+csrf = CSRFProtect()
 
 
 def _env_bool(name, default=False):
@@ -344,6 +348,16 @@ def setup_logging(app):
                 access_logger.info(line)
             elif duration_ms >= app.config['SLOW_REQUEST_MS']:
                 app.logger.warning('慢请求: %s', line)
+        response.headers.setdefault('X-Content-Type-Options', 'nosniff')
+        response.headers.setdefault('Referrer-Policy', 'strict-origin-when-cross-origin')
+        response.headers.setdefault('X-Frame-Options', 'SAMEORIGIN')
+        # HSTS must never be emitted by local/test instances: browsers cache it
+        # for the host and can then make an HTTP development server unreachable.
+        if not app.config.get('DEBUG') and not app.config.get('TESTING'):
+            response.headers.setdefault(
+                'Strict-Transport-Security',
+                'max-age=31536000; includeSubDomains',
+            )
         return response
     
     # 记录应用启动日志
@@ -437,6 +451,7 @@ def create_app(config_name='default'):
         
     # 调用配置初始化
     config[config_name].init_app(app)
+    csrf.init_app(app)
     
     # 配置日志系统
     print("\n正在配置应用日志系统...")
@@ -474,7 +489,29 @@ def create_app(config_name='default'):
     @app.context_processor
     def inject_now():
         from datetime import datetime as dt_now
-        return {'current_time': dt_now.utcnow()}
+        notification_unread_count = 0
+        action_center_count = 0
+        student_id = current_user.student_id if current_user.is_authenticated else None
+        if student_id:
+            try:
+                from services.notifications import count_unread
+                notification_unread_count = count_unread(student_id)
+            except Exception:
+                # Notification rendering must never make an otherwise healthy
+                # page unavailable; the inbox remains the source of detail.
+                app.logger.warning('站内通知未读数读取失败', exc_info=True)
+            try:
+                from services.action_center import count_action_center_items
+                action_center_count = count_action_center_items(current_user)
+            except Exception:
+                # The action badge is advisory; the full action center remains
+                # available even when one of its sources is temporarily down.
+                app.logger.warning('行动中心待处理数读取失败', exc_info=True)
+        return {
+            'current_time': dt_now.utcnow(),
+            'notification_unread_count': notification_unread_count,
+            'action_center_count': action_center_count,
+        }
     
     # 初始化Flask-Session（如果可用）
     if HAS_FLASK_SESSION and Session is not None:
@@ -537,6 +574,29 @@ def create_app(config_name='default'):
             'message': message,
             'request_id': error_request_id(),
         }), code
+
+    @app.errorhandler(CSRFError)
+    def handle_csrf_error(error):
+        """Return a safe, non-sensitive response for failed CSRF checks."""
+
+        app.logger.warning(
+            'CSRF 校验失败: path=%s method=%s reason=%s request_id=%s',
+            request.path,
+            request.method,
+            getattr(error, 'description', 'unknown'),
+            error_request_id(),
+        )
+        request_id = error_request_id()
+        if request_prefers_json_error():
+            return error_json(400, 'csrf_failed', '请求已失效，请刷新页面后重试')
+        return render_template(
+            '404.html',
+            title='请求已失效',
+            heading='请求已失效',
+            message='安全校验失败，请刷新页面后重试。',
+            request_id=request_id,
+            from_page=request.path,
+        ), 400
 
     @app.errorhandler(404)
     def handle_not_found(error):
@@ -606,6 +666,15 @@ def create_app(config_name='default'):
         response.headers['Vary'] = 'Accept-Encoding'
         response.headers.pop('Content-Length', None)
         return response
+
+    @app.get('/favicon.ico')
+    def favicon():
+        """Serve the same lightweight brand icon for browser defaults."""
+
+        return send_file(
+            os.path.join(app.root_path, 'static', 'img', 'favicon.svg'),
+            mimetype='image/svg+xml',
+        )
 
     @app.get('/healthz')
     def healthz():

@@ -213,7 +213,7 @@
             </div>
             <div class="stat-item">
                 <div class="stat-value">{{ user.user_ascore }}</div>
-                <div class="stat-label">平均分</div>
+                <div class="stat-label">平均分（0–100）</div>
             </div>
             <div class="stat-item">
                 <div class="stat-value">{{ user.user_tscore }}</div>
@@ -312,7 +312,7 @@
                             <i class="bi bi-star text-warning" style="font-size: 2.5rem;"></i>
                         </div>
                         <h4 class="card-title">{{ user.user_ascore|round(1) }}</h4>
-                        <p class="text-muted">平均分数</p>
+                        <p class="text-muted">平均分数（0–100）</p>
                     </div>
                 </div>
             </div>
@@ -357,7 +357,7 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="https://cdn.jsdelivr.net/npm/chart.js@3.7.1/dist/chart.min.js"></script>
+<script src="{{ url_for('static', filename='vendor/chart.js/3.9.1/chart.min.js') }}?v=3.9.1"></script>
 <script>
     // 最简单的标签页切换函数
     function showTab(tabId) {

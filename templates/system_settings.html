@@ -67,6 +67,7 @@
 </div>
 
 <form method="post" action="{{ url_for('main.system_settings') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <div class="card settings-card">
         <div class="card-header">
             <div class="card-title"><i class="bi bi-gear"></i> 基本设置</div>
@@ -153,4 +154,4 @@
         </button>
     </div>
 </form>
-{% endblock %} 
+{% endblock %}

@@ -238,7 +238,7 @@ function displayAnswer(answerText) {
         formattedAnswer = renderMarkdown(answerText);
     } else {
         // 简单的HTML格式化
-        formattedAnswer = answerText
+        formattedAnswer = escapeHtml(String(answerText || ''))
             .replace(/\n\n/g, '<br><br>')
             .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
             .replace(/\*(.*?)\*/g, '<em>$1</em>')
@@ -252,7 +252,7 @@ function displayAnswer(answerText) {
                 <i class="bi bi-robot"></i>
                 <span>AI助手回答</span>
             </div>
-            <div class="answer-content markdown-content">
+            <div class="answer-content markdown-content cs-markdown">
                 ${formattedAnswer}
             </div>
         </div>
@@ -282,7 +282,7 @@ function displayAnswerError(errorMessage) {
             </div>
             <div class="answer-content">
                 <p>很抱歉，无法获取AI助手的回答。</p>
-                <p class="error-details">错误信息: ${errorMessage}</p>
+                <p class="error-details">错误信息: ${escapeHtml(errorMessage || '未知错误')}</p>
                 <button onclick="handleQuestionSubmit()" class="retry-btn">
                     <i class="bi bi-arrow-repeat"></i> 重新尝试
                 </button>
@@ -302,15 +302,17 @@ function showQuestionAlert(type, message) {
         
         const newAlertContainer = document.createElement('div');
         newAlertContainer.id = 'question-alert';
-        newAlertContainer.className = `alert alert-${type} mt-2`;
-        newAlertContainer.innerHTML = message;
+        const safeType = ['info', 'success', 'warning', 'danger'].includes(type) ? type : 'info';
+        newAlertContainer.className = `alert alert-${safeType} mt-2`;
+        newAlertContainer.textContent = message == null ? '' : String(message);
         
         // 插入到问题容器之后
         questionContainer.insertAdjacentElement('afterend', newAlertContainer);
     } else {
         // 更新已有的警告容器
-        alertContainer.className = `alert alert-${type} mt-2`;
-        alertContainer.innerHTML = message;
+        const safeType = ['info', 'success', 'warning', 'danger'].includes(type) ? type : 'info';
+        alertContainer.className = `alert alert-${safeType} mt-2`;
+        alertContainer.textContent = message == null ? '' : String(message);
     }
     
     // 自动隐藏提示（仅对info类型）
@@ -466,7 +468,7 @@ function handleAskQuestion() {
         onDelta: event => {
             streamedAnswer += event.content || '';
             if (streamedAnswer) {
-                answerContainer.innerHTML = `<div class="card"><div class="card-body markdown-content">${formatMarkdown(streamedAnswer)}</div></div>`;
+                answerContainer.innerHTML = `<div class="card"><div class="card-body markdown-content cs-markdown">${formatMarkdown(streamedAnswer)}</div></div>`;
             }
         },
         onError: event => {
@@ -496,7 +498,7 @@ function handleAskQuestion() {
                             <div><i class="bi bi-robot me-2"></i> AI助手回答：</div>
                         </div>
                     </div>
-                    <div class="card-body markdown-content">
+                    <div class="card-body markdown-content cs-markdown">
                         ${formatMarkdown(answer)}
                     </div>
                 </div>
@@ -529,7 +531,7 @@ function handleAskQuestion() {
                         </div>
                     </div>
                     <div class="card-body">
-                        <p class="mb-0">${data.error || '服务器无法回答您的问题，请稍后重试。'}</p>
+                        <p class="mb-0">${escapeHtml(data.error || '服务器无法回答您的问题，请稍后重试。')}</p>
                     </div>
                 </div>
             `;
@@ -556,7 +558,7 @@ function handleAskQuestion() {
                     </div>
                 </div>
                 <div class="card-body">
-                    <p class="mb-0">提问时发生错误：${error.message}</p>
+                    <p class="mb-0">提问时发生错误：${escapeHtml(error.message || '网络异常')}</p>
                     <button class="btn btn-outline-primary mt-3" onclick="handleAskQuestion()">
                         <i class="bi bi-arrow-repeat me-2"></i> 重新尝试
                     </button>
@@ -572,7 +574,7 @@ function handleAskQuestion() {
  * 该函数负责将Markdown文本转换为HTML格式
  * 主要功能包括：
  * - 支持基本的Markdown语法（标题、粗体、斜体、代码块等）
- * - 提供降级处理，当marked库不可用时使用简单格式化
+ * - 通过共享渲染器统一处理格式与安全过滤
  * - 确保输出的HTML安全性
  * - 支持代码高亮集成
  * 
@@ -583,20 +585,16 @@ function formatMarkdown(markdown) {
     if (!markdown) return '';
     
     try {
-        // 如果marked库可用，使用它
-        if (typeof marked !== 'undefined') {
-            return marked.parse(markdown);
+        // 使用共享渲染器，确保不同页面的 Markdown 视觉与安全策略一致。
+        if (window.CodeSenseMarkdown) {
+            return window.CodeSenseMarkdown.renderToString(markdown);
         }
-        
-        // 简单的Markdown格式化
-        return markdown
-            .replace(/\n/g, '<br>')
-            .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-            .replace(/\*(.*?)\*/g, '<em>$1</em>')
-            .replace(/```(\w*)([\s\S]*?)```/g, '<pre><code class="$1">$2</code></pre>');
+
+        // 共享渲染器不可用时只返回转义后的纯文本，避免产生不安全 HTML。
+        return escapeHtml(markdown).replace(/\n/g, '<br>');
     } catch (e) {
         console.error('格式化Markdown时出错:', e);
-        return markdown;
+        return escapeHtml(markdown).replace(/\n/g, '<br>');
     }
 }
 
@@ -655,15 +653,19 @@ function showNotification(message, type = 'info') {
     
     // 创建通知元素
     const notification = document.createElement('div');
-    notification.className = `alert alert-${type} alert-dismissible fade show`;
+    const safeType = ['info', 'success', 'warning', 'danger'].includes(type) ? type : 'info';
+    notification.className = `alert alert-${safeType} alert-dismissible fade show`;
     notification.style.minWidth = '250px';
     notification.style.marginBottom = '10px';
     notification.style.boxShadow = '0 0 10px rgba(0,0,0,0.1)';
     
-    notification.innerHTML = `
-        ${message}
-        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
-    `;
+    notification.textContent = message == null ? '' : String(message);
+    const closeButton = document.createElement('button');
+    closeButton.type = 'button';
+    closeButton.className = 'btn-close';
+    closeButton.setAttribute('data-bs-dismiss', 'alert');
+    closeButton.setAttribute('aria-label', 'Close');
+    notification.appendChild(closeButton);
     
     // 添加到容器
     document.getElementById('notification-container').appendChild(notification);

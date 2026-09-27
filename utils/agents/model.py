@@ -101,6 +101,7 @@ class StructuredDecisionModel:
         fallback_message: str = "请继续说明你的思路。",
         temperature: float = 0.2,
         max_tokens: int = 1200,
+        request_kind: str = "interactive",
     ) -> None:
         if client is None:
             from services.llm_client import llm_client
@@ -110,6 +111,7 @@ class StructuredDecisionModel:
         self.fallback_decision = fallback_decision or AgentDecision(message=fallback_message)
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.request_kind = request_kind
         self.last_error: Optional[ModelError] = None
         self.fallback_used = False
 
@@ -128,7 +130,7 @@ class StructuredDecisionModel:
 
         messages = self._decision_messages(system_prompt, context, tool_specs, tool_results)
         try:
-            response = self._chat_with_trace_kind(messages)
+            response = self._client_chat(messages)
             return parse_json_decision(response)
         except ModelError as error:
             if error.code not in _REPAIRABLE_ERRORS:
@@ -147,28 +149,34 @@ class StructuredDecisionModel:
             ),
         })
         try:
-            response = self._chat_with_trace_kind(repair_messages)
+            response = self._client_chat(repair_messages)
             return parse_json_decision(response)
         except ModelError:
             return self._fallback("INVALID_DECISION")
         except Exception:
             return self._fallback("CLIENT_ERROR")
 
-    def _chat_with_trace_kind(self, messages: List[Dict[str, str]]):
-        """Keep injected legacy clients usable while labeling real calls."""
+    def _is_available(self) -> bool:
+        try:
+            return bool(self.client.is_available())
+        except Exception:
+            return False
+
+    def _client_chat(self, messages: List[Dict[str, str]]) -> Any:
+        """Pass request priority to the shared client without breaking fakes."""
+
         try:
             return self.client.chat(
                 messages,
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
-                request_kind="stage3",
+                request_kind=self.request_kind,
             )
         except TypeError as error:
-            # Tests and integrations may inject an older client whose method
-            # predates the optional trace keyword.  A Python signature error
-            # happens before the provider call, so this fallback cannot replay
-            # a partially completed model request.
-            if "unexpected keyword argument 'request_kind'" not in str(error):
+            # A few integrations and older test doubles implement the
+            # historical chat signature.  Only retry for that specific
+            # compatibility failure; do not hide a provider TypeError.
+            if "request_kind" not in str(error):
                 raise
             legacy_chat = self.client.chat
             return legacy_chat(
@@ -176,12 +184,6 @@ class StructuredDecisionModel:
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
             )
-
-    def _is_available(self) -> bool:
-        try:
-            return bool(self.client.is_available())
-        except Exception:
-            return False
 
     def _fallback(self, code: str) -> AgentDecision:
         self.last_error = ModelError(code)

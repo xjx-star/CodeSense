@@ -200,6 +200,7 @@ class AsyncTaskManager:
         """处理能力趋势更新任务"""
         from models import db, AbilityTrend, Submission, User, Assignment
         from services.ai_evaluator import AIEvaluator
+        from utils.access import assignment_target_class_filter, authoritative_class_name
         import os
         
         data = task['data']
@@ -229,11 +230,11 @@ class AsyncTaskManager:
                     db.session.commit()
                     return
 
-                class_name = user.class_name
+                class_name = authoritative_class_name(user)
                 assigned_assignment_ids = []
                 if class_name:
                     assigned_assignments = Assignment.query.filter(
-                        Assignment.target_classes.like(f'%{class_name}%')
+                        assignment_target_class_filter(class_name)
                     ).all()
                     assigned_assignment_ids = [a.id for a in assigned_assignments]
 

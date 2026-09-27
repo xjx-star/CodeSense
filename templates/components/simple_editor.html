@@ -315,7 +315,10 @@ document.addEventListener('DOMContentLoaded', function() {
         // 创建Toast元素
         var toast = document.createElement('div');
         toast.className = 'editor-toast ' + (type === 'error' ? 'editor-toast-error' : 'editor-toast-success');
-        toast.innerHTML = '<div class="editor-toast-message">' + message + '</div>';
+        var messageElement = document.createElement('div');
+        messageElement.className = 'editor-toast-message';
+        messageElement.textContent = message == null ? '' : String(message);
+        toast.appendChild(messageElement);
         
         // 添加到文档
         document.body.appendChild(toast);
@@ -356,4 +359,4 @@ document.addEventListener('DOMContentLoaded', function() {
         }, 3000);
     }
 });
-</script> 
+</script>

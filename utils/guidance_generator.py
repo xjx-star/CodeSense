@@ -82,8 +82,7 @@ def initialize_guidance_system():
                 initialized = False
                 return False
             except Exception as e:
-                print(f"× 大模型初始化失败: {e}")
-                print(traceback.format_exc())
+                print(f"× 大模型初始化失败: {type(e).__name__}")
                 
                 # 尝试切换API
                 if api_keys.has_zhipu and api_keys.has_openai:
@@ -95,7 +94,7 @@ def initialize_guidance_system():
                             initialized = True
                             return True
                         except Exception as e2:
-                            print(f"× OpenAI初始化也失败: {e2}")
+                            print(f"× OpenAI初始化也失败: {type(e2).__name__}")
                     
                 print("将使用本地规则生成器提供基础指导")
                 initialized = False
@@ -106,8 +105,7 @@ def initialize_guidance_system():
             initialized = False
             return False
     except Exception as e:
-        print(f"× 编程指导系统初始化失败: {e}")
-        print(traceback.format_exc())
+        print(f"× 编程指导系统初始化失败: {type(e).__name__}")
         print("将使用本地规则生成器提供基础指导")
         initialized = False
         return False
@@ -412,15 +410,22 @@ def generate_guidance(code, assignment_title, assignment_description, language="
                 return generate_rule_based_guidance(code, assignment_title, assignment_description, language)
                 
         except Exception as e:
-            print(f"使用大模型生成指导时出错: {e}")
-            print(traceback.format_exc())
+            print(f"使用大模型生成指导时出错: {type(e).__name__}")
             # 降级使用规则生成
             return generate_rule_based_guidance(code, assignment_title, assignment_description, language)
     else:
         # 使用基于规则的生成器
         return generate_rule_based_guidance(code, assignment_title, assignment_description, language)
 
-def generate_answer_to_question(code, question, assignment_title, assignment_description, language="cpp", _stream=False):
+def generate_answer_to_question(
+    code,
+    question,
+    assignment_title,
+    assignment_description,
+    language="cpp",
+    _stream=False,
+    knowledge_context=None,
+):
     """
     根据学生的提问和代码生成回答
     code: 学生当前编写的代码
@@ -440,7 +445,7 @@ def generate_answer_to_question(code, question, assignment_title, assignment_des
     # 如果大模型系统可用，使用大模型生成更智能的回答
     if initialized and guidance_generator:
         try:
-            print(f"使用大模型回答问题: '{question[:50]}...' (问题长度: {len(question)})")
+            print(f"使用大模型回答问题，问题长度: {len(question)}")
             
             # 增强提示词，提供更详细的指导方向
             prompt = f"""
@@ -483,6 +488,13 @@ def generate_answer_to_question(code, question, assignment_title, assignment_des
 请根据以上原则，给出引导性回答（不超过300字，重点突出，语气友好）。
 如果问题涉及代码错误，指出问题的"方向"而非"答案"。
 """
+            prompt += f"""
+
+## 知识证据边界
+{knowledge_context or '当前没有已检索的知识库证据。不要编造知识点引用，回答仅基于题目和代码。'}
+如果使用上面的证据，请在相关内容后标注对应的 [K] 引用；没有证据时不要生成引用标记。
+"""
+
             print(f"发送问题到大模型API，提示词长度: {len(prompt)}")
             
             if _stream:
@@ -499,15 +511,14 @@ def generate_answer_to_question(code, question, assignment_title, assignment_des
             print(f"收到大模型回答，长度: {len(response if response else 'None')}")
             
             if response and len(response.strip()) > 20:
-                print(f"大模型回答前100个字符: {response[:100].replace(chr(10), ' ')}")
+                print(f"收到大模型回答，长度: {len(response)}")
                 return response
             else:
                 print(f"大模型生成回答失败或回答过短，降级使用规则生成")
                 return generate_rule_based_answer(code, question, assignment_title, assignment_description, language)
                 
         except Exception as e:
-            print(f"使用大模型生成回答时出错: {e}")
-            print(traceback.format_exc())
+            print(f"使用大模型生成回答时出错: {type(e).__name__}")
             # 降级使用规则生成
             print("由于错误，降级使用规则生成回答")
             return generate_rule_based_answer(code, question, assignment_title, assignment_description, language)
@@ -528,8 +539,14 @@ def generate_guidance_stream(code, assignment_title, assignment_description, lan
         yield from result
 
 
-def generate_answer_to_question_stream(code, question, assignment_title,
-                                       assignment_description, language="cpp"):
+def generate_answer_to_question_stream(
+    code,
+    question,
+    assignment_title,
+    assignment_description,
+    language="cpp",
+    knowledge_context=None,
+):
     """Stream an answer to a code question while keeping JSON callers intact."""
     result = generate_answer_to_question(
         code,
@@ -538,6 +555,7 @@ def generate_answer_to_question_stream(code, question, assignment_title,
         assignment_description,
         language,
         _stream=True,
+        knowledge_context=knowledge_context,
     )
     if isinstance(result, str):
         yield result

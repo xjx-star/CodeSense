@@ -4,42 +4,25 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="CodeSense 酷森思 - 基于机器学习的代码能力评估平台">
+    <meta name="description" content="CodeSense 酷森思 - 面向高校编程教学的 AI 引导式评测与学习平台">
+    <meta name="csrf-token" content="{{ csrf_token() }}">
     <title>{% block title %}CodeSense 酷森思{% endblock %}</title>
     <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='img/favicon.svg') }}">
 
-    <!-- 导航栏紧急修复样式 -->
-    <style>
-        .navbar-nav {
-            display: flex !important;
-            flex-direction: row !important;
-            flex-wrap: wrap !important;
-            justify-content: center !important;
-        }
+    <!-- 字体（项目同源静态资源，网络不可用时仍保持一致的排版） -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='vendor/fonts/codesense-fonts.css') }}?v=5.3">
 
-        .navbar-nav>li {
-            display: inline-block !important;
-            margin: 0 5px !important;
-        }
-    </style>
+    <!-- 引入图标库（项目同源静态资源） -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='vendor/bootstrap-icons/1.10.5/font/bootstrap-icons.min.css') }}?v=1.10.5">
 
-    <!-- 引入Google字体 -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <!-- 添加Bootstrap CSS（项目同源静态资源） -->
+    <link href="{{ url_for('static', filename='vendor/bootstrap/5.1.3/css/bootstrap.min.css') }}?v=5.1.3" rel="stylesheet">
 
-    <!-- 引入图标库 -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap-icons/1.10.5/font/bootstrap-icons.min.css">
-
-    <!-- 添加Bootstrap CSS -->
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.1.3/css/bootstrap.min.css" rel="stylesheet" crossorigin="anonymous">
-
-    <!-- CodeMirror CSS -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/codemirror.min.css">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/theme/darcula.min.css">
+    <!-- CodeMirror CSS（项目同源静态资源） -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='vendor/codemirror/5.65.2/codemirror.css') }}?v=5.65.2">
+    <link rel="stylesheet" href="{{ url_for('static', filename='vendor/codemirror/5.65.2/theme/darcula.css') }}?v=5.65.2">
     <link rel="stylesheet"
-        href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/addon/fold/foldgutter.min.css">
+        href="{{ url_for('static', filename='vendor/codemirror/5.65.2/addon/fold/foldgutter.css') }}?v=5.65.2">
 
     <!-- 引入自定义CSS -->
     <link rel="stylesheet" href="{{ url_for('static', filename='modern.css') }}">
@@ -50,31 +33,14 @@
     <!-- 页面特定的CSS -->
     {% block extra_css %}{% endblock %}
 
+    <!-- 统一 AI/Markdown 阅读样式：加载在页面局部样式之后，避免各页面重复覆盖 -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/codesense-markdown.css') }}?v={{ now().timestamp() }}">
+
     <!-- 页面特定的头部内容（如脚本） -->
     {% block extra_head %}{% endblock %}
 
-    <!-- 导航栏修复CSS -->
+    <!-- 演示模式提示与退出表单样式 -->
     <style>
-        .navbar-nav {
-            display: flex !important;
-            /* 强制横向显示 */
-            flex-wrap: wrap;
-            justify-content: center;
-        }
-
-        @media (max-width: 768px) {
-            .navbar-container {
-                flex-direction: column;
-                align-items: center;
-                gap: 16px;
-            }
-
-            .navbar-user {
-                margin-top: 10px;
-                justify-content: center;
-            }
-        }
-
         .navbar-demo-notice {
             display: inline-flex;
             align-items: center;
@@ -96,6 +62,26 @@
                 text-align: center;
             }
         }
+
+        .navbar-logout-form {
+            display: inline;
+            margin: 0;
+            padding: 0;
+        }
+
+        .navbar-logout-form .navbar-link {
+            border: 0;
+            background: transparent;
+            font: inherit;
+            cursor: pointer;
+        }
+
+        @media (max-width: 768px) {
+            .navbar-logout-form {
+                display: block;
+                width: 100%;
+            }
+        }
     </style>
 </head>
 
@@ -106,8 +92,8 @@
     <nav class="navbar" aria-label="全局导航">
         <div class="container navbar-container">
             <a href="{{ url_for('main.home') }}" class="navbar-brand">
-                <i class="bi bi-code-square" style="margin-right: 12px;"></i>
-                <span>CodeSense 酷森思</span>
+                <img class="navbar-brand-logo" src="{{ url_for('static', filename='img/codesense-logo-final.png') }}"
+                    alt="CodeSense 酷森思" width="156" height="52">
             </a>
 
             <!-- Hamburger Button for Mobile -->
@@ -142,6 +128,8 @@
                     </li>
                     <li><a href="{{ url_for('grades.grade_statistics') }}"
                             class="navbar-link {% if request.path == url_for('grades.grade_statistics') %}active{% endif %}">成绩统计</a></li>
+                    <li><a href="{{ url_for('assignments.teacher_review_queue') }}"
+                            class="navbar-link {% if request.path.startswith('/teacher/reviews') %}active{% endif %}">提交复核</a></li>
                     {% endif %}
 
                     {# Admin Links #}
@@ -159,7 +147,31 @@
                             class="navbar-link {% if 'api' in request.path %}active{% endif %}">API文档</a></li>
                     <li><a href="{{ url_for('main.admin_feedback') }}"
                             class="navbar-link {% if request.path.startswith('/admin/feedback') %}active{% endif %}">反馈中心</a></li>
+                    <li><a href="{{ url_for('assignments.teacher_review_queue') }}"
+                            class="navbar-link {% if request.path.startswith('/teacher/reviews') %}active{% endif %}">提交复核</a></li>
                     {% endif %}
+                    <li>
+                        <a href="{{ url_for('main.action_center') }}"
+                            class="navbar-link {% if request.path.startswith('/action-center') %}active{% endif %}"
+                            aria-label="行动中心{% if action_center_count %}，{{ action_center_count }} 条待处理{% endif %}">
+                            <i class="bi bi-list-check" aria-hidden="true"></i>
+                            <span>行动中心</span>
+                            {% if action_center_count %}
+                            <span class="action-center-count notification-count" aria-label="{{ action_center_count }} 条待处理">{{ action_center_count if action_center_count < 100 else '99+' }}</span>
+                            {% endif %}
+                        </a>
+                    </li>
+                    <li>
+                        <a href="{{ url_for('main.notifications') }}"
+                            class="navbar-link navbar-notification-link {% if request.path.startswith('/notifications') %}active{% endif %}"
+                            aria-label="站内通知{% if notification_unread_count %}，{{ notification_unread_count }} 条未读{% endif %}">
+                            <i class="bi bi-bell" aria-hidden="true"></i>
+                            <span>通知</span>
+                            {% if notification_unread_count %}
+                            <span class="notification-count" aria-label="{{ notification_unread_count }} 条未读">{{ notification_unread_count if notification_unread_count < 100 else '99+' }}</span>
+                            {% endif %}
+                        </a>
+                    </li>
                     {% else %}
                     <li><a href="{{ url_for('auth.login') }}"
                             class="navbar-link {% if request.path == url_for('auth.login') %}active{% endif %}">登录</a></li>
@@ -192,10 +204,13 @@
                         <i class="bi bi-person-circle" style="margin-right: 8px;"></i>
                         {{ session.get('full_name') or session.get('username') }}
                     </a>
-                    <a href="{{ url_for('auth.logout') }}" class="navbar-link">
+                    <form action="{{ url_for('auth.logout') }}" method="POST" class="navbar-logout-form">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button type="submit" class="navbar-link">
                         <i class="bi bi-box-arrow-right" style="margin-right: 8px;"></i>
                         退出
-                    </a>
+                        </button>
+                    </form>
                     {% else %}
                     <a href="{{ url_for('auth.login') }}" class="navbar-button">
                         <i class="bi bi-box-arrow-in-right" style="margin-right: 10px;"></i>
@@ -253,10 +268,11 @@
     <footer class="footer">
         <div class="container footer-content">
             <nav class="footer-links" aria-label="辅助导航">
-                <a href="{{ url_for('main.about') }}">关于系统</a>
-                <a href="{{ url_for('main.help') }}">使用帮助</a>
-                <a href="{{ url_for('main.feedback', from_page=request.path) }}">反馈中心</a>
+                <a href="{{ url_for('main.about') }}" {% if request.endpoint == 'main.about' %}aria-current="page"{% endif %}>关于系统</a>
+                <a href="{{ url_for('main.help') }}" {% if request.endpoint == 'main.help' %}aria-current="page"{% endif %}>使用帮助</a>
+                <a href="{{ url_for('main.feedback', from_page=request.path) }}" {% if request.endpoint in ('main.feedback', 'main.feedback_receipt') %}aria-current="page"{% endif %}>反馈中心</a>
             </nav>
+            <p class="footer-note">学习记录与反馈仅在授权范围内用于教学改进；如需协助，请保留反馈编号。</p>
             <div class="footer-copyright">
                 &copy; {{ now().year }} CodeSense 酷森思 - 版权所有
             </div>
@@ -264,18 +280,10 @@
     </footer>
 
     <!-- 基础JavaScript库 -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.1.3/js/bootstrap.bundle.min.js" crossorigin="anonymous"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js"></script>
+    <script src="{{ url_for('static', filename='vendor/bootstrap/5.1.3/js/bootstrap.bundle.min.js') }}?v=5.1.3"></script>
     <script>
-        // 全局 Markdown 渲染：页面加载后自动渲染所有 .markdown-body 和 .markdown-render 元素
+        // 初始化并显示所有 Toast
         document.addEventListener('DOMContentLoaded', function () {
-            if (typeof marked === 'undefined') return;
-            marked.setOptions({ breaks: true, gfm: true });
-            document.querySelectorAll('.markdown-body, .markdown-render').forEach(function (el) {
-                var raw = el.getAttribute('data-markdown') || el.textContent || '';
-                if (raw.trim()) el.innerHTML = marked.parse(raw);
-            });
-            // 初始化并显示所有 Toast
             document.querySelectorAll('.toast').forEach(function (toastEl) {
                 var toast = new bootstrap.Toast(toastEl);
                 toast.show();
@@ -283,33 +291,14 @@
         });
     </script>
 
-    <!-- 备用Bootstrap加载 -->
+    <!-- 初始化Bootstrap组件；依赖已经由同源静态资源提供，不再回退到外部CDN -->
     <script>
-        // 检查Bootstrap是否成功加载
-        setTimeout(function () {
-            if (typeof bootstrap === 'undefined') {
-                console.warn('Bootstrap未正确加载，尝试使用备用CDN');
-                // 加载备用CSS
-                var backupCSS = document.createElement('link');
-                backupCSS.rel = 'stylesheet';
-                backupCSS.href = 'https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.1.3/css/bootstrap.min.css';
-                document.head.appendChild(backupCSS);
-
-                // 加载备用JS
-                var backupScript = document.createElement('script');
-                backupScript.src = 'https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.1.3/js/bootstrap.bundle.min.js';
-                backupScript.onload = function () {
-                    console.log('Bootstrap已通过备用CDN加载');
-                    // 重新初始化页面上的Bootstrap组件
-                    initBootstrapComponents();
-                };
-                document.head.appendChild(backupScript);
-            } else {
-                console.log('Bootstrap已正确加载:', bootstrap.Modal ? '包含Modal组件' : '缺少Modal组件');
-                // 确保Bootstrap组件被正确初始化
-                initBootstrapComponents();
-            }
-        }, 1000);
+        if (typeof bootstrap === 'undefined') {
+            console.error('Bootstrap同源静态资源加载失败，页面交互组件将不可用');
+        } else {
+            console.log('Bootstrap已正确加载:', bootstrap.Modal ? '包含Modal组件' : '缺少Modal组件');
+            initBootstrapComponents();
+        }
 
         // 初始化Bootstrap组件
         function initBootstrapComponents() {
@@ -331,20 +320,19 @@
     </script>
 
     <!-- 添加jQuery (某些Bootstrap组件可能需要) -->
-    <script src="https://code.jquery.com/jquery-3.6.0.min.js"
-        integrity="sha256-/xUj+3OJU5yExlq6GSYGSHk7tPXikynS7ogEvDej/m4=" crossorigin="anonymous"></script>
+    <script src="{{ url_for('static', filename='vendor/jquery/3.6.0/jquery.min.js') }}?v=3.6.0"></script>
 
-    <!-- CodeMirror 基础脚本 -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/codemirror.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/mode/python/python.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/mode/clike/clike.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/addon/edit/closebrackets.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/addon/edit/matchbrackets.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/addon/selection/active-line.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/addon/fold/foldcode.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/addon/fold/foldgutter.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/addon/fold/brace-fold.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/addon/fold/indent-fold.min.js"></script>
+    <!-- CodeMirror 基础脚本（项目同源静态资源） -->
+    <script src="{{ url_for('static', filename='vendor/codemirror/5.65.2/codemirror.js') }}?v=5.65.2"></script>
+    <script src="{{ url_for('static', filename='vendor/codemirror/5.65.2/mode/python/python.js') }}?v=5.65.2"></script>
+    <script src="{{ url_for('static', filename='vendor/codemirror/5.65.2/mode/clike/clike.js') }}?v=5.65.2"></script>
+    <script src="{{ url_for('static', filename='vendor/codemirror/5.65.2/addon/edit/closebrackets.js') }}?v=5.65.2"></script>
+    <script src="{{ url_for('static', filename='vendor/codemirror/5.65.2/addon/edit/matchbrackets.js') }}?v=5.65.2"></script>
+    <script src="{{ url_for('static', filename='vendor/codemirror/5.65.2/addon/selection/active-line.js') }}?v=5.65.2"></script>
+    <script src="{{ url_for('static', filename='vendor/codemirror/5.65.2/addon/fold/foldcode.js') }}?v=5.65.2"></script>
+    <script src="{{ url_for('static', filename='vendor/codemirror/5.65.2/addon/fold/foldgutter.js') }}?v=5.65.2"></script>
+    <script src="{{ url_for('static', filename='vendor/codemirror/5.65.2/addon/fold/brace-fold.js') }}?v=5.65.2"></script>
+    <script src="{{ url_for('static', filename='vendor/codemirror/5.65.2/addon/fold/indent-fold.js') }}?v=5.65.2"></script>
 
     <!-- 自定义JavaScript -->
     <script>
@@ -357,21 +345,9 @@
                 }
             });
 
-            // 强制导航栏水平排列
-            const navbarNav = document.querySelector('.navbar-nav');
-            if (navbarNav) {
-                navbarNav.style.cssText = 'display: flex !important; flex-direction: row !important; flex-wrap: wrap !important;';
-
-                // 处理每个导航项
-                const navItems = navbarNav.querySelectorAll('li');
-                navItems.forEach(item => {
-                    item.style.cssText = 'display: inline-block !important; float: left !important; margin: 0 5px !important;';
-                });
-            }
-
             // 检查CodeMirror是否正确加载
             if (typeof CodeMirror === 'undefined') {
-                console.error('CodeMirror 未加载，尝试通过本地CDN加载');
+                console.error('CodeMirror 同源静态资源未加载');
 
                 // 创建失败提示
                 var errorMsg = document.createElement('div');
@@ -381,27 +357,18 @@
                 // 插入到页面顶部
                 document.querySelector('.main-content .container').prepend(errorMsg);
 
-                // 尝试重新加载关键脚本
-                loadScript('https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/codemirror.min.js', function () {
-                    loadScript('https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/mode/clike/clike.min.js', function () {
-                        loadScript('https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/mode/python/python.min.js', function () {
-                            // 脚本加载完成，刷新页面
-                            window.location.reload();
-                        });
-                    });
-                });
             } else {
                 console.log('CodeMirror 已正确加载');
 
                 // 检查各模式是否正确加载
                 if (!CodeMirror.modes['text/x-c++src']) {
                     console.warn('C++ 模式未加载，尝试加载');
-                    loadScript('https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/mode/clike/clike.min.js');
+                    loadScript('{{ url_for('static', filename='vendor/codemirror/5.65.2/mode/clike/clike.js') }}');
                 }
 
                 if (!CodeMirror.modes['python']) {
                     console.warn('Python 模式未加载，尝试加载');
-                    loadScript('https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/mode/python/python.min.js');
+                    loadScript('{{ url_for('static', filename='vendor/codemirror/5.65.2/mode/python/python.js') }}');
                 }
             }
         });
@@ -413,73 +380,16 @@
             script.src = url;
             script.onload = callback || function () { };
             script.onerror = function () {
-                console.error('脚本加载失败:', url);
-                // 尝试使用备用CDN
-                var backupUrl = url.replace('cdnjs.cloudflare.com', 'cdn.bootcdn.net/ajax/libs');
-                console.log('尝试备用CDN:', backupUrl);
-                var backupScript = document.createElement('script');
-                backupScript.type = 'text/javascript';
-                backupScript.src = backupUrl;
-                document.head.appendChild(backupScript);
+                console.error('同源静态脚本加载失败:', url);
             };
             document.head.appendChild(script);
         }
     </script>
 
-    <script>
-        // Shared, non-blocking announcements for streamed and form-driven UI.
-        window.CodeSenseUI = window.CodeSenseUI || {};
-        window.CodeSenseUI.announce = function (message, politeness) {
-            var region = document.getElementById('codesense-live-region');
-            if (!region) return;
-            region.setAttribute('aria-live', politeness || 'polite');
-            region.textContent = '';
-            window.setTimeout(function () {
-                region.textContent = String(message || '');
-            }, 0);
-        };
-    </script>
-
-    <!-- 全局 Markdown 渲染（marked.js + DOMPurify） -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.6/purify.min.js"></script>
-    <script>
-        // 全局渲染所有 data-markdown 属性元素
-        (function () {
-            function renderAllMarkdown() {
-                if (typeof marked === 'undefined') return;
-                marked.setOptions({ breaks: true, gfm: true });
-                document.querySelectorAll('[data-markdown]').forEach(function (el) {
-                    var raw = el.getAttribute('data-markdown');
-                    if (raw) {
-                        // 预解析：如果内容是长段落且包含 1) 2) 或 1. 2. 等编号，协助分段
-                        if (!raw.includes('\n') || raw.split('\n').length < 3) {
-                            raw = raw.replace(/(\s)(\d[\)\.]\s?)/g, '\n\n$2');
-                        }
-                        var html = marked.parse(raw);
-                        el.innerHTML = typeof DOMPurify !== 'undefined' ? DOMPurify.sanitize(html) : html;
-                    }
-                });
-                // 同时渲染 class="markdown-render" 的元素（内容在 textContent 中）
-                document.querySelectorAll('.markdown-render').forEach(function (el) {
-                    if (el.getAttribute('data-rendered')) return;
-                    var raw = el.textContent || el.innerText;
-                    if (raw && raw.trim()) {
-                        var html = marked.parse(raw);
-                        el.innerHTML = typeof DOMPurify !== 'undefined' ? DOMPurify.sanitize(html) : html;
-                        el.setAttribute('data-rendered', '1');
-                    }
-                });
-            }
-            if (document.readyState === 'loading') {
-                document.addEventListener('DOMContentLoaded', renderAllMarkdown);
-            } else {
-                renderAllMarkdown();
-            }
-            // 暴露全局函数供各页面调用
-            window.renderMarkdownElements = renderAllMarkdown;
-        })();
-    </script>
+    <!-- 全局 Markdown 渲染（同源静态依赖，避免 CDN/DNS/代理故障影响排版） -->
+    <script src="{{ url_for('static', filename='vendor/marked.min.js') }}?v=9.1.6"></script>
+    <script src="{{ url_for('static', filename='vendor/purify.min.js') }}?v=3.0.6"></script>
+    <script src="{{ url_for('static', filename='js/codesense-markdown.js') }}?v={{ now().timestamp() }}"></script>
 
     <!-- 导航栏移动端折叠 JS -->
     <script>
@@ -529,6 +439,82 @@
                 });
             }
         });
+    </script>
+
+    <!-- 统一保护所有同源写请求，兼容原生表单、fetch 和 jQuery 请求 -->
+    <script>
+        (function () {
+            const meta = document.querySelector('meta[name="csrf-token"]');
+            const token = meta ? meta.getAttribute('content') : '';
+            const unsafeMethods = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+            if (!token) return;
+
+            const nativeFetch = window.fetch && window.fetch.bind(window);
+            if (nativeFetch) {
+                window.fetch = function (input, init) {
+                    const requestInit = Object.assign({}, init || {});
+                    const method = String(
+                        requestInit.method || (input && input.method) || 'GET'
+                    ).toUpperCase();
+                    let url;
+                    try {
+                        url = new URL(
+                            typeof input === 'string' ? input : input.url,
+                            window.location.href
+                        );
+                    } catch (_) {
+                        return nativeFetch(input, requestInit);
+                    }
+
+                    if (url.origin === window.location.origin && unsafeMethods.has(method)) {
+                        const inheritedHeaders =
+                            typeof Request !== 'undefined' && input instanceof Request
+                                ? input.headers
+                                : undefined;
+                        const headers = new Headers(requestInit.headers || inheritedHeaders);
+                        if (!headers.has('X-CSRFToken')) {
+                            headers.set('X-CSRFToken', token);
+                        }
+                        requestInit.headers = headers;
+                        if (!requestInit.credentials) requestInit.credentials = 'same-origin';
+                    }
+                    return nativeFetch(input, requestInit);
+                };
+            }
+
+            const addFormToken = function (form) {
+                const method = (form.getAttribute('method') || 'GET').toUpperCase();
+                if (unsafeMethods.has(method) && !form.querySelector('input[name="csrf_token"]')) {
+                    const field = document.createElement('input');
+                    field.type = 'hidden';
+                    field.name = 'csrf_token';
+                    field.value = token;
+                    form.appendChild(field);
+                }
+            };
+
+            document.querySelectorAll('form').forEach(addFormToken);
+            document.addEventListener('submit', function (event) {
+                if (event.target && event.target.tagName === 'FORM') {
+                    addFormToken(event.target);
+                }
+            }, true);
+
+            if (window.jQuery) {
+                window.jQuery.ajaxPrefilter(function (options, originalOptions, jqXHR) {
+                    const method = String(options.type || originalOptions.type || 'GET').toUpperCase();
+                    let url;
+                    try {
+                        url = new URL(options.url || window.location.href, window.location.href);
+                    } catch (_) {
+                        return;
+                    }
+                    if (url.origin === window.location.origin && unsafeMethods.has(method)) {
+                        jqXHR.setRequestHeader('X-CSRFToken', token);
+                    }
+                });
+            }
+        })();
     </script>
 
     <!-- 页面特定的JavaScript -->

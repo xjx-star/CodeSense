@@ -22,6 +22,7 @@
                 </div>
                 <div class="card-body">
                     <form method="POST">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                         <p>请勾选所有您希望接收此作业的班级：</p>
                         {% if managed_classes %}
                             {% for class in managed_classes %}
@@ -60,7 +61,7 @@
                     <p class="text-muted">{{ assignment.description|truncate(200) }}</p>
                     <ul class="list-unstyled">
                         <li><strong>总提交数:</strong> {{ assignment.count }}</li>
-                        <li><strong>平均分:</strong> {{ "%.2f"|format(assignment.average_score) }}</li>
+                        <li><strong>平均分（0–100）:</strong> {{ "%.2f"|format(assignment.average_score) }}</li>
                     </ul>
                 </div>
             </div>

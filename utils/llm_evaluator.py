@@ -440,9 +440,9 @@ class LLMEvaluator:
             return score, feedback
             
         except Exception as e:
-            print(f"大模型API调用失败: {e}")
+            print(f"大模型API调用失败: {type(e).__name__}")
             # 返回一个默认评分
-            return 2, f"大模型评估失败: {str(e)}"
+            return 2, "大模型评估失败，请稍后重试"
     
     def evaluate_with_structured_output(self, prompt, task_type):
         """
@@ -518,7 +518,7 @@ class LLMEvaluator:
             response_text = response.choices[0].message.content
             
             # 处理响应
-            print(f"收到原始响应: {response_text[:200]}...")
+            print(f"收到原始响应，长度: {len(response_text)}")
             
             # 提取JSON部分
             json_text = self._extract_json(response_text)
@@ -534,7 +534,7 @@ class LLMEvaluator:
                     
                 return structured_result
             except json.JSONDecodeError as e:
-                print(f"JSON解析错误: {e}")
+                print(f"JSON解析错误: {type(e).__name__}")
                 print(f"尝试修复JSON格式")
                 # 尝试修复常见的JSON格式问题
                 fixed_json = self._fix_json(json_text)
@@ -552,8 +552,7 @@ class LLMEvaluator:
                     return None
         
         except Exception as e:
-            print(f"结构化评估出错: {e}")
-            print(traceback.format_exc())
+            print(f"结构化评估出错: {type(e).__name__}")
             return None
             
     def _apply_strict_mode_adjustments(self, result):
@@ -742,8 +741,7 @@ class LLMEvaluator:
             return score, formatted_response
             
         except Exception as e:
-            print(f"生成编程指导时出错: {e}")
-            print(traceback.format_exc())
+            print(f"生成编程指导时出错: {type(e).__name__}")
             
             # 异常情况下返回通用鼓励信息
             generic_guidance = """### 代码分析
@@ -784,9 +782,8 @@ class LLMEvaluator:
             return response.choices[0].message.content
         
         except Exception as e:
-            print(f"调用API时出错: {e}")
-            print(traceback.format_exc())
-            raise Exception(f"调用{self.api_type}的{self.model_name}模型失败: {str(e)}")
+            print(f"调用API时出错: {type(e).__name__}")
+            raise RuntimeError(f"调用{self.api_type}模型失败") from e
     
     def get_llm_response(self, prompt):
         """
@@ -806,18 +803,17 @@ class LLMEvaluator:
             try:
                 formatted_response = self._format_markdown_response(response)
             except Exception as format_error:
-                print(f"Markdown格式化出错，使用备用格式化方法: {format_error}")
+                print(f"Markdown格式化出错，使用备用格式化方法: {type(format_error).__name__}")
                 formatted_response = self._format_markdown_simple(response)
             
             # 调试输出
             print(f"LLM响应长度: {len(formatted_response)} 字符")
-            print(f"响应前200个字符: {formatted_response[:200]}")
+            print(f"响应已格式化，长度: {len(formatted_response)}")
             
             return formatted_response
         except Exception as e:
-            print(f"获取LLM回答失败: {str(e)}")
-            print(traceback.format_exc())
-            return f"获取AI回答时出错: {str(e)}\n\n如果问题持续，请联系管理员检查API配置。"
+            print(f"获取LLM回答失败: {type(e).__name__}")
+            return "获取AI回答时出错，请稍后重试。\n\n如果问题持续，请联系管理员检查API配置。"
 
     def stream_llm_response(self, prompt):
         """Yield the raw text response from the model as it is generated.
@@ -854,9 +850,8 @@ class LLMEvaluator:
                 if content:
                     yield str(content)
         except Exception as e:
-            print(f"调用LLM流式API时出错: {e}")
-            print(traceback.format_exc())
-            raise Exception(f"调用{self.api_type}的{self.model_name}模型失败: {str(e)}")
+            print(f"调用LLM流式API时出错: {type(e).__name__}")
+            raise RuntimeError(f"调用{self.api_type}模型失败") from e
     
     def _format_markdown_response(self, text):
         """
@@ -996,7 +991,7 @@ class LLMEvaluator:
         # 重新组合文本
         text = ''.join(parts)
         
-        print(f"格式化后的Markdown前300个字符: {text[:300]}")
+        print(f"格式化后的Markdown长度: {len(text)}")
         return text
     
     def _format_markdown_simple(self, text):
@@ -1040,5 +1035,5 @@ class LLMEvaluator:
         # 简单处理标题格式
         text = re.sub(r'#([^\s])', r'# \1', text)
         
-        print(f"简化格式后的Markdown前300个字符: {text[:300]}")
+        print(f"简化格式后的Markdown长度: {len(text)}")
         return text

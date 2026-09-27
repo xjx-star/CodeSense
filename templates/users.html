@@ -4,9 +4,9 @@
 
 {% block extra_css %}
 <!-- 引入Chart.js -->
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="{{ url_for('static', filename='vendor/chart.js/3.9.1/chart.min.js') }}?v=3.9.1"></script>
 <!-- 引入Animate.css -->
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css" />
+<link rel="stylesheet" href="{{ url_for('static', filename='vendor/animate.css/4.1.1/animate.min.css') }}?v=4.1.1" />
 
 <style>
     :root {
@@ -685,7 +685,7 @@
                             <th>姓名</th>
                             <th>用户类型</th>
                             <th>提交次数</th>
-                            <th>平均分数</th>
+                            <th>平均分数（0–100）</th>
                             <th>操作</th>
                         </tr>
                     </thead>
@@ -697,7 +697,7 @@
                             <td>{{ user.full_name }}</td>
                             <td>
                                 <span
-                                    class="badge {% if user.usertype == '管理员' %}bg-danger{% elif user.usertype == '教师' %}bg-success{% else %}bg-primary{% endif %}">
+                                    class="user-badge badge {% if user.usertype == '管理员' %}bg-danger{% elif user.usertype == '教师' %}bg-success{% else %}bg-primary{% endif %}">
                                     {{ user.usertype }}
                                 </span>
                             </td>
@@ -776,7 +776,10 @@
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
-                <button type="button" class="btn btn-danger" id="confirmDelete">删除</button>
+                <form id="delete-user-form" method="POST" class="d-inline">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button type="submit" class="btn btn-danger" id="confirmDelete">删除</button>
+                </form>
             </div>
         </div>
     </div>
@@ -894,6 +897,7 @@
 
                 var userIdToDelete = null;
                 var isAdmin = false;
+                var deleteForm = document.getElementById('delete-user-form');
 
                 // 确保关闭按钮工作
                 document.querySelectorAll('[data-bs-dismiss="modal"]').forEach(function (btn) {
@@ -942,20 +946,18 @@
                     });
                 });
 
-                document.getElementById('confirmDelete').addEventListener('click', function () {
-                    if (userIdToDelete) {
-                        if (isAdmin) {
-                            alert('无法删除管理员用户');
-                            if (typeof bootstrap !== 'undefined' && bootstrap.Modal) {
-                                deleteModal.hide();
-                            } else if (typeof $ !== 'undefined' && $.fn.modal) {
-                                $(deleteModalElement).modal('hide');
-                            }
-                        } else {
-                            var deleteUrl = "{{ url_for('users.delete_user', student_id='') }}" + userIdToDelete;
-                            window.location.href = deleteUrl;
-                        }
+                deleteForm.addEventListener('submit', function (event) {
+                    event.preventDefault();
+                    if (!userIdToDelete) return;
+                    if (isAdmin) {
+                        alert('无法删除管理员用户');
+                        deleteModal.hide();
+                        return;
                     }
+
+                    this.action = "{{ url_for('users.delete_user', student_id='__STUDENT_ID__') }}"
+                        .replace('__STUDENT_ID__', encodeURIComponent(userIdToDelete));
+                    HTMLFormElement.prototype.submit.call(this);
                 });
             } catch (e) {
                 console.error('初始化模态框时出错:', e);

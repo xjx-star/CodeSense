@@ -37,8 +37,13 @@
                     <h3 class="mb-0">创建新作业</h3>
                 </div>
                 <div class="card-body">
+                    {% if focus_knowledge_point %}
+                    <div class="alert alert-info" role="status">
+                        本次练习将预先关联知识点：<strong>{{ focus_knowledge_point }}</strong>{% if focus_class %}，并先布置给班级：<strong>{{ focus_class.name }}</strong>{% endif %}。
+                    </div>
+                    {% endif %}
                     <form id="assignment-form" method="POST"
-                        action="{{ url_for('assignments.add_teacher_assignment') }}">
+                        action="{{ url_for('assignments.add_teacher_assignment', knowledge_point=focus_knowledge_point, class_id=focus_class.id if focus_class else None) }}">
                         {{ form.hidden_tag() }}
 
                         <div class="mb-3">
@@ -131,6 +136,12 @@
 
 {% block extra_js %}
 <script>
+    function escapeHtml(value) {
+        const element = document.createElement('div');
+        element.textContent = value == null ? '' : String(value);
+        return element.innerHTML;
+    }
+
     document.addEventListener('DOMContentLoaded', function () {
         const formatButton = document.getElementById('format-button');
         const rawTextInput = document.getElementById('raw-text-input');
@@ -198,9 +209,7 @@
                     onError: data => {
                         streamError = new Error(data.message || data.error || '生成失败');
                     },
-                    onDone: data => {
-                        if (data.override_id) assignmentIdField.value = data.override_id;
-                    },
+                    onDone: () => {},
                     onMetrics: metrics => console.debug('[AI stream metrics] format-assignment', metrics)
                 });
                 if (streamError) throw streamError;
@@ -365,15 +374,15 @@
                             if (validateResult) {
                                 let resultHtml = '';
                                 if (consensusCount === autoData.test_cases.length) {
-                                    resultHtml = `<div class="alert alert-success"><i class="bi bi-check-circle-fill"></i> ${autoData.summary}</div>`;
+                                    resultHtml = `<div class="alert alert-success"><i class="bi bi-check-circle-fill"></i> ${escapeHtml(autoData.summary)}</div>`;
                                 } else {
-                                    resultHtml = `<div class="alert alert-warning"><i class="bi bi-exclamation-triangle-fill"></i> ${autoData.summary}</div>`;
+                                    resultHtml = `<div class="alert alert-warning"><i class="bi bi-exclamation-triangle-fill"></i> ${escapeHtml(autoData.summary)}</div>`;
                                 }
                                 // 显示生成的代码
                                 if (autoData.solutions) {
                                     autoData.solutions.forEach(function (sol) {
                                         const badge = sol.compiled ? '<span class="badge bg-success">编译成功</span>' : '<span class="badge bg-danger">编译失败</span>';
-                                        resultHtml += `<details class="mb-2"><summary class="small text-muted">解法 #${sol.index} ${badge}</summary><pre class="mt-1 small bg-white p-2 rounded" style="max-height:200px;overflow:auto;">${(sol.code_preview || '').replace(/</g, '&lt;')}</pre></details>`;
+                                        resultHtml += `<details class="mb-2"><summary class="small text-muted">解法 #${escapeHtml(sol.index)} ${badge}</summary><pre class="mt-1 small bg-white p-2 rounded" style="max-height:200px;overflow:auto;">${escapeHtml(sol.code_preview)}</pre></details>`;
                                     });
                                 }
                                 validateResult.innerHTML = resultHtml;
@@ -381,7 +390,7 @@
                         } else {
                             setStatus(`⚠️ 自动验证未完成：${autoData.message || autoData.summary || '未知错误'}，请手动检查输出。`);
                             if (validateResult) {
-                                validateResult.innerHTML = `<div class="alert alert-warning"><i class="bi bi-exclamation-triangle"></i> ${autoData.message || autoData.summary}</div>`;
+                                validateResult.innerHTML = `<div class="alert alert-warning"><i class="bi bi-exclamation-triangle"></i> ${escapeHtml(autoData.message || autoData.summary)}</div>`;
                             }
                         }
 
@@ -485,7 +494,7 @@
                     data = data || {};
 
                     if (!data.success) {
-                        validateResult.innerHTML = `<div class="alert alert-danger"><i class="bi bi-exclamation-triangle"></i> ${data.message}</div>`;
+                        validateResult.innerHTML = `<div class="alert alert-danger"><i class="bi bi-exclamation-triangle"></i> ${escapeHtml(data.message)}</div>`;
                         return;
                     }
 
@@ -512,20 +521,20 @@
                     // 构建结果 HTML
                     let html = '';
                     if (consensusCount === (data.test_cases || []).length) {
-                        html += `<div class="alert alert-success"><i class="bi bi-check-circle-fill"></i> ${data.summary}</div>`;
+                        html += `<div class="alert alert-success"><i class="bi bi-check-circle-fill"></i> ${escapeHtml(data.summary)}</div>`;
                     } else {
-                        html += `<div class="alert alert-warning"><i class="bi bi-exclamation-triangle-fill"></i> ${data.summary}</div>`;
+                        html += `<div class="alert alert-warning"><i class="bi bi-exclamation-triangle-fill"></i> ${escapeHtml(data.summary)}</div>`;
                     }
                     if (data.solutions) {
                         data.solutions.forEach(function (sol) {
                             const badge = sol.compiled ? '<span class="badge bg-success">编译成功</span>' : '<span class="badge bg-danger">编译失败</span>';
-                            html += `<details class="mb-2"><summary class="small text-muted">解法 #${sol.index} ${badge}</summary><pre class="mt-1 small bg-white p-2 rounded" style="max-height:200px;overflow:auto;">${(sol.code_preview || '').replace(/</g, '&lt;')}</pre></details>`;
+                            html += `<details class="mb-2"><summary class="small text-muted">解法 #${escapeHtml(sol.index)} ${badge}</summary><pre class="mt-1 small bg-white p-2 rounded" style="max-height:200px;overflow:auto;">${escapeHtml(sol.code_preview)}</pre></details>`;
                         });
                     }
                     validateResult.innerHTML = html;
 
                 } catch (err) {
-                    validateResult.innerHTML = `<div class="alert alert-danger"><i class="bi bi-exclamation-triangle"></i> 验证请求失败: ${err.message}</div>`;
+                    validateResult.innerHTML = `<div class="alert alert-danger"><i class="bi bi-exclamation-triangle"></i> 验证请求失败: ${escapeHtml(err.message)}</div>`;
                 } finally {
                     validateBtn.disabled = false;
                     validateSpinner.style.display = 'none';

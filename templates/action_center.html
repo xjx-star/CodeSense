@@ -1,0 +1,65 @@
+{% extends "layout.html" %}
+
+{% block title %}行动中心 - CodeSense 酷森思{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/action-center.css') }}">
+{% endblock %}
+
+{% block content %}
+<section class="action-center-page" aria-labelledby="action-center-title">
+    <header class="action-center-header">
+        <div>
+            <p class="action-center-eyebrow">CODE SENSE / ACTION QUEUE · 学习队列</p>
+            <h1 id="action-center-title">行动中心</h1>
+            <p class="action-center-lede">把下一步放在眼前，回到学习、复核或处理队列。</p>
+        </div>
+        <div class="action-center-totals" aria-label="行动数量">
+            <strong>{{ action_center.counts.total }}</strong>
+            <span>项待处理</span>
+        </div>
+    </header>
+
+    <div class="action-center-status" role="status" aria-live="polite" aria-atomic="true">
+        {% if action_center.degraded_sources %}
+        部分来源暂时不可用，已显示其余行动。
+        {% else %}
+        队列已更新 · {{ action_center.generated_at }}
+        {% endif %}
+    </div>
+
+    <nav class="action-center-filters" aria-label="行动优先级筛选">
+        {% for filter_name, filter_label in [('all', '全部'), ('urgent', '需要先处理'), ('next', '接下来'), ('info', '了解更多')] %}
+        <a class="action-center-filter" href="{{ url_for('main.action_center', priority=filter_name) }}"
+            {% if selected_priority|lower == filter_name %}aria-current="page"{% endif %}>{{ filter_label }}</a>
+        {% endfor %}
+    </nav>
+
+    {% if action_center['items'] %}
+    <ol class="action-center-list">
+        {% for item in action_center['items'] %}
+        <li class="action-center-item action-center-item--{{ item.priority }}">
+            <a class="action-center-item-link" href="{{ item.href }}">
+                <span class="action-center-item-rail" aria-hidden="true"></span>
+                <span class="action-center-item-body">
+                    <span class="action-center-item-meta">
+                        <span class="action-center-item-priority">{{ item.status_label }}</span>
+                        <span>{{ item.source }}</span>
+                        {% if item.occurred_at %}<time datetime="{{ item.occurred_at }}">{{ item.occurred_at }}</time>{% endif %}
+                    </span>
+                    <strong>{{ item.title }}</strong>
+                    <span>{{ item.summary }}</span>
+                </span>
+                <span class="action-center-item-arrow" aria-hidden="true">→</span>
+            </a>
+        </li>
+        {% endfor %}
+    </ol>
+    {% else %}
+    <div class="action-center-empty" role="status">
+        <strong>现在没有需要处理的行动。</strong>
+        <span>新的提交、复核或通知出现后，会在这里形成下一步。</span>
+    </div>
+    {% endif %}
+</section>
+{% endblock %}

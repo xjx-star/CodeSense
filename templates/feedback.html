@@ -199,6 +199,7 @@
         {% endif %}
 
         <form method="POST" action="{{ url_for('main.feedback') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <fieldset>
                 <legend id="feedback-form-title">提交一条反馈</legend>
 

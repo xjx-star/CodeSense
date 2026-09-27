@@ -4,11 +4,13 @@ from io import BytesIO
 from flask import Blueprint, render_template, request, send_file
 from flask_login import current_user, login_required
 from openpyxl import Workbook
-from sqlalchemy import func, or_
+from sqlalchemy import and_, func, or_
+from werkzeug.utils import secure_filename
 
 from models import Class, Submission, ThinkingSession, ThinkingStageLog, User
 from services.course_grading import build_gradebook
 from utils.auth import admin_or_teacher_required
+from utils.export_safety import safe_export_cell
 
 
 grades = Blueprint('grades', __name__)
@@ -33,7 +35,11 @@ def _students_for_classes(classes, selected_class_id=None):
     if class_ids:
         filters.append(User.class_id.in_(class_ids))
     if class_names:
-        filters.append(User.class_name.in_(class_names))
+        # class_id is authoritative for newer records.  Only fall back to
+        # the legacy class_name field when no foreign-key relationship exists;
+        # a stale name must not make a student appear in another teacher's
+        # gradebook.
+        filters.append(and_(User.class_id.is_(None), User.class_name.in_(class_names)))
 
     return User.query.filter(
         User.usertype == '学生',
@@ -134,16 +140,19 @@ def export_grade_statistics():
 
     for record in records:
         sheet.append([
-            record['student_id'],
-            record['student_name'],
-            record['class_name'],
-            record['formal_assignment_count'],
-            record['formal_submission_count'],
-            record['best_formal_score'] if record['best_formal_score'] is not None else '',
-            record['guided_session_count'],
-            record['guided_minutes'],
-            record['course_score'],
-            record['reason'],
+            safe_export_cell(record['student_id']),
+            safe_export_cell(record['student_name']),
+            safe_export_cell(record['class_name']),
+            safe_export_cell(record['formal_assignment_count']),
+            safe_export_cell(record['formal_submission_count']),
+            safe_export_cell(
+                record['best_formal_score']
+                if record['best_formal_score'] is not None else ''
+            ),
+            safe_export_cell(record['guided_session_count']),
+            safe_export_cell(record['guided_minutes']),
+            safe_export_cell(record['course_score']),
+            safe_export_cell(record['reason']),
         ])
 
     sheet.append([])
@@ -161,9 +170,10 @@ def export_grade_statistics():
     output.seek(0)
 
     suffix = selected_class.name if selected_class_id and selected_class else '全部班级'
+    safe_suffix = secure_filename(suffix) or 'all_classes'
     return send_file(
         output,
         as_attachment=True,
-        download_name=f'成绩统计-{suffix}.xlsx',
+        download_name=f'grade_statistics-{safe_suffix}.xlsx',
         mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     )

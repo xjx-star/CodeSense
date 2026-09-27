@@ -16,6 +16,7 @@
         sessionId: null,
         assignmentId: null,
         currentStage: 1,
+        lifecycle: null,
         preset: null,
         // Timer
         startTime: null,
@@ -34,7 +35,7 @@
         forumCoverageSummary: null,
         forumUserGoal: null,
         pendingForumRequestId: null,
-        feynmanPhase: 'chat', // 'chat' | 'code_review' | 'completed'
+        feynmanPhase: 'chat', // 'chat' | 'code_generation' | 'code_review' | 'completed'
         buggyCode: null,
         buggyCodeInfo: null,
         devDebugTraceLoaded: false,
@@ -51,6 +52,94 @@
         };
     }
 
+    const lifecycleStatusLabels = {
+        active: '正在学习',
+        idle: '暂时停留',
+        completed: '已完成',
+        abandoned: '已放弃',
+        unknown: '等待同步',
+    };
+    let lifecycleSyncPromise = null;
+    let lifecycleBindingsReady = false;
+
+    function formatLifecycleDuration(seconds) {
+        const total = Math.max(0, Number.parseInt(seconds, 10) || 0);
+        const minutes = Math.floor(total / 60);
+        const remainder = total % 60;
+        return `${minutes}分${remainder}秒`;
+    }
+
+    function applySessionLifecycle(lifecycle) {
+        if (!lifecycle || typeof lifecycle !== 'object') return;
+        state.lifecycle = lifecycle;
+
+        const status = String(lifecycle.status || 'unknown');
+        const container = document.getElementById('arena-container');
+        const statusEl = document.getElementById('session-lifecycle-status');
+        const metaEl = document.getElementById('session-lifecycle-meta');
+        const nextEl = document.getElementById('session-next-action');
+        const progressEl = document.getElementById('session-lifecycle-progress');
+        const feedbackEl = document.getElementById('session-status-feedback');
+        if (container) container.dataset.sessionStatus = status;
+        if (statusEl) statusEl.textContent = lifecycleStatusLabels[status] || status;
+        if (metaEl) {
+            const activity = lifecycle.last_activity_at
+                ? `最近活动：${lifecycle.last_activity_at}`
+                : '最近活动：暂无记录';
+            const elapsed = `${lifecycle.elapsed_label || '已记录时间'}：${formatLifecycleDuration(lifecycle.elapsed_seconds)}`;
+            metaEl.textContent = `${activity} · ${elapsed}`;
+        }
+        if (nextEl) nextEl.textContent = `下一步：${lifecycle.next_action || '保持当前页面并继续学习。'}`;
+        if (progressEl) {
+            const percent = Math.min(100, Math.max(0, Number(lifecycle.progress_percent) || 0));
+            progressEl.style.width = `${percent}%`;
+            progressEl.setAttribute('aria-valuenow', String(percent));
+        }
+        if (feedbackEl) feedbackEl.textContent = '状态已同步';
+    }
+
+    function refreshSessionLifecycle(options = {}) {
+        if (!state.sessionId) return Promise.resolve(null);
+        if (lifecycleSyncPromise) return lifecycleSyncPromise;
+
+        lifecycleSyncPromise = fetchJSON(`/thinking/api/session/${state.sessionId}/status`, {
+            method: 'GET',
+        }).then(data => {
+            const lifecycle = data && (data.session || data.session_lifecycle);
+            applySessionLifecycle(lifecycle);
+            if (options.announce) showNotification('状态已同步', 'info');
+            return lifecycle;
+        }).catch(error => {
+            const feedbackEl = document.getElementById('session-status-feedback');
+            if (feedbackEl) feedbackEl.textContent = '状态同步失败，当前输入仍然保留';
+            throw error;
+        }).finally(() => {
+            lifecycleSyncPromise = null;
+        });
+        return lifecycleSyncPromise;
+    }
+
+    function handleSessionVisibilityChange() {
+        if (document.visibilityState === 'visible' && state.sessionId) {
+            refreshSessionLifecycle({ announce: false }).catch(() => {});
+        }
+    }
+
+    function bindSessionLifecycleControls() {
+        if (lifecycleBindingsReady) return;
+        lifecycleBindingsReady = true;
+        const button = document.getElementById('session-status-refresh');
+        if (button) {
+            button.addEventListener('click', () => {
+                button.disabled = true;
+                refreshSessionLifecycle({ announce: true })
+                    .catch(() => {})
+                    .finally(() => { button.disabled = false; });
+            });
+        }
+        document.addEventListener('visibilitychange', handleSessionVisibilityChange);
+    }
+
     // ============================================================
     // Initialization
     // ============================================================
@@ -59,6 +148,7 @@
         if (!container) return;
 
         state.assignmentId = parseInt(container.dataset.assignmentId);
+        bindSessionLifecycleControls();
         const presetStatus = (container.dataset.presetStatus || '').trim();
 
         if (presetStatus !== 'ready') {
@@ -100,6 +190,7 @@
                 state.sessionId = data.session_id;
                 state.currentStage = data.current_stage;
                 state.preset = data.preset;
+                applySessionLifecycle(data.session_lifecycle);
 
                 if (data.resumed) {
                     showNotification('已恢复上次的学习进度', 'info');
@@ -585,6 +676,10 @@
 
                 if (data.passed) {
                     showNotification('🎉 思路描述通过！进入积木编程阶段', 'success');
+                    // 后端此刻已把会话推进到阶段二。同步一次生命周期，
+                    // 让“服务器观察时间/下一步”在切换时刷新，而不是停在
+                    // 会话创建时的快照（0分0秒、下一步指向阶段一）。
+                    refreshSessionLifecycle({ announce: false }).catch(() => {});
                     setTimeout(() => initStage(2), 1500);
                 } else {
                     // Proactively post AI Companion guidance
@@ -608,8 +703,8 @@
 
         container.innerHTML = `
             <div class="score-display">
-                <div class="score-circle ${passed ? 'pass' : 'fail'}">${score}%</div>
-                <div class="score-feedback">${feedback}</div>
+                <div class="score-circle ${passed ? 'pass' : 'fail'}">${escapeHtml(score)}%</div>
+                <div class="score-feedback">${escapeHtml(feedback || '')}</div>
             </div>
         `;
         container.style.display = 'block';
@@ -840,8 +935,9 @@
                 const level = getNormalizedIndent(step.indent);
                 const indent = '    ' + '    '.repeat(level);
                 if (answer) {
-                    const codeLine = (answer === step.correct_answer && step.code_line) ? step.code_line : answer;
-                    preview += indent + codeLine + '\n';
+                    // 判题答案只保存在服务端。预览展示学生当前输入，
+                    // 不依赖下发的 correct_answer/code_line。
+                    preview += indent + answer + '\n';
                 } else {
                     preview += indent + `// Step ${step.step_id}: ???\n`;
                 }
@@ -1007,14 +1103,10 @@
         const answers = state.quizAnswers || {};
         const stepsState = quizSteps.map(step => {
             const studentAns = (answers[step.step_id] || '').trim();
-            const correctAns = (step.correct_answer || '').trim();
-            const isCorrect = studentAns ? (normalizeCppCode(studentAns) === normalizeCppCode(correctAns)) : false;
             return {
                 step_id: step.step_id,
                 question: step.question,
-                student_answer: studentAns || null,
-                correct_answer: correctAns,
-                is_correct: isCorrect
+                student_answer: studentAns || null
             };
         });
 
@@ -1056,7 +1148,7 @@
             typingDiv.id = typingId;
             typingDiv.innerHTML = `
                 <div class="chat-avatar teacher">🤖</div>
-                <div class="chat-bubble ai"><span class="typing-dots">思考引导中...</span></div>
+                <div class="chat-bubble ai cs-markdown"><span class="typing-dots">思考引导中...</span></div>
             `;
             container.appendChild(typingDiv);
             container.scrollTop = container.scrollHeight;
@@ -1116,7 +1208,7 @@
         msgDiv.className = `chat-message ${isUser ? 'user' : ''}`;
         msgDiv.innerHTML = `
             <div class="chat-avatar ${avatarClass}">${avatarIcon}</div>
-            <div class="chat-bubble ${isUser ? 'user-msg' : 'ai'}">${renderMarkdown(text)}</div>
+            <div class="chat-bubble cs-markdown ${isUser ? 'user-msg' : 'ai'}">${renderMarkdown(text)}</div>
         `;
         container.appendChild(msgDiv);
         container.scrollTop = container.scrollHeight;
@@ -1129,7 +1221,7 @@
         msgDiv.className = 'chat-message';
         msgDiv.innerHTML = `
             <div class="chat-avatar teacher">🤖</div>
-            <div class="chat-bubble ai"></div>
+            <div class="chat-bubble ai cs-markdown"></div>
         `;
         container.appendChild(msgDiv);
         const bubble = msgDiv.querySelector('.chat-bubble');
@@ -1306,7 +1398,8 @@
     }
 
     function triggerCodeWritingPhase() {
-        state.feynmanPhase = 'code_review';
+        if (state.feynmanPhase === 'code_generation') return;
+        state.feynmanPhase = 'code_generation';
 
         showTypingIndicator('forum');
 
@@ -1320,6 +1413,7 @@
             hideTypingIndicator('forum');
             applyForumUserGoal(data && data.user_goal);
             if (data.success) {
+                state.feynmanPhase = 'code_review';
                 state.buggyCode = data.buggy_code;
                 appendForumEvent({
                     event_id: `local-write-${data.request_id || newAgentRequestId('write-result')}`,
@@ -1335,9 +1429,18 @@
 
                 // Show code review panel
                 showCodeReviewPanel(data.buggy_code);
+            } else {
+                // A transient generator/provider error must not strand the
+                // page in code_review. The server gate remains authoritative,
+                // so the next turn can safely retry this idempotent step.
+                state.feynmanPhase = 'chat';
+                updateForumComposerState();
+                showError((data && data.error) || '代码练习生成失败，请稍后重试。');
             }
         }).catch(err => {
             hideTypingIndicator('forum');
+            state.feynmanPhase = 'chat';
+            updateForumComposerState();
             showError(err.message);
         });
     }
@@ -1470,7 +1573,7 @@
         msgDiv.className = `chat-message ${isUser ? 'user' : ''}`;
         msgDiv.innerHTML = `
             <div class="chat-avatar ${avatarClass}">${avatarIcon}</div>
-            <div class="chat-bubble ${isUser ? 'user-msg' : 'ai'}">${renderMarkdown(content)}</div>
+            <div class="chat-bubble cs-markdown ${isUser ? 'user-msg' : 'ai'}">${renderMarkdown(content)}</div>
         `;
         container.appendChild(msgDiv);
         container.scrollTop = container.scrollHeight;
@@ -1709,6 +1812,14 @@
         if (!payload || !payload.primary) return;
         if (payload.forum_state && typeof payload.forum_state === 'object') {
             state.forumCoverageSummary = sanitizeCoverageSummary(payload.forum_state.coverage_summary);
+            if (
+                payload.forum_state.target_role === 'student_agent'
+                && state.feynmanPhase === 'chat'
+            ) {
+                // The server owns the next-probe handoff. Keep the composer
+                // aligned when the Teacher authorized Xiaoming privately.
+                setForumTarget('student_agent');
+            }
         }
         applyForumUserGoal(payload.user_goal);
 
@@ -2378,7 +2489,7 @@
 
         const div = document.createElement('div');
         div.className = 'hint-bubble';
-        div.innerHTML = `<i class="bi bi-lightbulb"></i><span>${renderMarkdown(hint)}</span>`;
+        div.innerHTML = `<i class="bi bi-lightbulb"></i><span class="cs-markdown">${renderMarkdown(hint)}</span>`;
         container.appendChild(div);
         container.scrollTop = container.scrollHeight;
     }
@@ -2395,26 +2506,34 @@
 
         if (typeof bootstrap !== 'undefined') {
             const toastEl = document.createElement('div');
+            const safeType = ['success', 'warning', 'danger', 'info'].includes(type) ? type : 'info';
             // Choose color based on notification type
-            const bgClass = type === 'success' ? 'bg-success' : type === 'warning' ? 'bg-warning text-dark' : type === 'danger' ? 'bg-danger' : 'bg-info text-dark';
+            const bgClass = safeType === 'success' ? 'bg-success' : safeType === 'warning' ? 'bg-warning text-dark' : safeType === 'danger' ? 'bg-danger' : 'bg-info text-dark';
             toastEl.className = `toast align-items-center text-white ${bgClass} border-0`;
             toastEl.setAttribute('role', 'alert');
             toastEl.setAttribute('aria-live', 'assertive');
             toastEl.setAttribute('aria-atomic', 'true');
-            toastEl.innerHTML = `
-                <div class="toast-header">
-                    <strong class="me-auto">${type === 'success' ? '✅' : type === 'warning' ? '⚠️' : 'ℹ️'}</strong>
-                    <button type="button" class="btn-close" data-bs-dismiss="toast"></button>
-                </div>
-                <div class="toast-body">${message}</div>
-            `;
+            const header = document.createElement('div');
+            header.className = 'toast-header';
+            const icon = document.createElement('strong');
+            icon.className = 'me-auto';
+            icon.textContent = safeType === 'success' ? '✅' : safeType === 'warning' ? '⚠️' : 'ℹ️';
+            const closeButton = document.createElement('button');
+            closeButton.type = 'button';
+            closeButton.className = 'btn-close';
+            closeButton.setAttribute('data-bs-dismiss', 'toast');
+            header.append(icon, closeButton);
+            const body = document.createElement('div');
+            body.className = 'toast-body';
+            body.textContent = message == null ? '' : String(message);
+            toastEl.append(header, body);
             toastContainer.appendChild(toastEl);
             const toast = new bootstrap.Toast(toastEl, { delay: 4000 });
             toast.show();
             return;
         }
         // Fallback
-        console.log(`[${type}] ${message}`);
+        console.log(`[${type}]`, message);
     }
 
     function showError(message) {
@@ -2696,34 +2815,7 @@
     }
 
     function debugAutoS2() {
-        if (state.currentStage !== 2) {
-            showNotification('必须在阶段二才能使用此功能', 'warning');
-            return;
-        }
-        if (!state.preset || !state.preset.quiz_steps) {
-            showNotification('缺少逐步问答预设数据', 'warning');
-            return;
-        }
-
-        const quizSteps = state.preset.quiz_steps || [];
-        quizSteps.forEach(step => {
-            state.quizAnswers[step.step_id] = step.correct_answer;
-            // Also populate inputs in the UI
-            const inputEl = document.getElementById(`quiz-fill-${step.step_id}`);
-            if (inputEl) {
-                inputEl.value = step.correct_answer;
-            }
-            const radioEl = document.querySelector(`input[name="quiz-step-${step.step_id}"][value="${escapeHtml(step.correct_answer)}"]`);
-            if (radioEl) {
-                radioEl.checked = true;
-                const optionEl = radioEl.closest('.quiz-choice-option');
-                if (optionEl) optionEl.classList.add('selected');
-            }
-        });
-
-        updateQuizPreview();
-        showNotification('已自动填入标准答案，正在提交验证...', 'info');
-        verifyQuiz();
+        showNotification('标准答案仅在服务端判定；请使用“跳到阶段三”调试阶段流转。', 'info');
     }
 
     function showCelebration() {
@@ -2815,13 +2907,8 @@
 
     function renderMarkdown(str) {
         if (!str) return '';
-        if (typeof marked !== 'undefined') {
-            marked.setOptions({ breaks: true, gfm: true });
-            let html = marked.parse(str);
-            if (typeof DOMPurify !== 'undefined') {
-                html = DOMPurify.sanitize(html);
-            }
-            return html;
+        if (window.CodeSenseMarkdown) {
+            return window.CodeSenseMarkdown.renderToString(str);
         }
         return escapeHtml(str).replace(/\n/g, '<br>');
     }
@@ -2932,7 +3019,7 @@
                     audioEl.src = url;
                     audioEl.style.display = 'block';
 
-                    statusEl.innerHTML = '录音完成！请点击播放按钮试听。<br>如果能听到你的声音，说明麦克风正常。';
+                    statusEl.textContent = '录音完成！请点击播放按钮试听。如果能听到你的声音，说明麦克风正常。';
                     statusEl.style.color = '#10b981';
                     resultBtns.style.display = 'flex';
                 };
@@ -2951,11 +3038,11 @@
             } catch (err) {
                 console.error('麦克风测试失败:', err);
                 if (err.name === 'NotAllowedError') {
-                    statusEl.innerHTML = '麦克风权限被拒绝。请点击浏览器地址栏左侧的🔒图标，允许麦克风权限后重试。';
+                    statusEl.textContent = '麦克风权限被拒绝。请点击浏览器地址栏左侧的🔒图标，允许麦克风权限后重试。';
                 } else if (err.name === 'NotFoundError') {
-                    statusEl.innerHTML = '未检测到麦克风设备，请检查硬件连接。';
+                    statusEl.textContent = '未检测到麦克风设备，请检查硬件连接。';
                 } else {
-                    statusEl.innerHTML = `麦克风访问失败: ${err.message}`;
+                    statusEl.textContent = `麦克风访问失败: ${err.message || '未知错误'}`;
                 }
                 statusEl.style.color = '#ef4444';
             }

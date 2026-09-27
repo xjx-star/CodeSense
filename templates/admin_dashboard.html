@@ -3,6 +3,7 @@
 {% block title %}管理员仪表盘 - CodeSense 酷森思{% endblock %}
 
 {% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/knowledge-quality.css') }}">
 <style>
     .overview-card {
         margin-bottom: 2rem;
@@ -124,26 +125,8 @@
 {% endblock %}
 
 {% block extra_head %}
-<!-- Chart.js库引入 -->
-<script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
-<!-- 备用CDN链接 -->
-<script>
-    // 检查Chart是否已经加载
-    if (typeof Chart === 'undefined') {
-        console.log("主要CDN加载失败，尝试备用CDN...");
-        document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"><\/script>');
-        
-        // 如果备用CDN也失败，尝试第三个源
-        setTimeout(function() {
-            if (typeof Chart === 'undefined') {
-                console.log("备用CDN也加载失败，尝试第三个源...");
-                document.write('<script src="https://cdn.bootcdn.net/ajax/libs/Chart.js/3.9.1/chart.min.js"><\/script>');
-            }
-        }, 1000);
-    } else {
-        console.log("Chart.js已成功从主要CDN加载");
-    }
-</script>
+<!-- Chart.js库（项目同源静态资源） -->
+<script src="{{ url_for('static', filename='vendor/chart.js/3.9.1/chart.min.js') }}?v=3.9.1"></script>
 {% endblock %}
 
 {% block content %}
@@ -173,10 +156,62 @@
         
         <div class="stat-card">
             <div class="stat-value">{{ average_score | round(2) }}</div>
-            <div class="stat-label">平均得分</div>
+            <div class="stat-label">平均得分（0–100）</div>
         </div>
     </div>
 </div>
+
+<section class="knowledge-quality-card card" id="knowledge-quality-card"
+    aria-labelledby="knowledge-quality-title"
+    data-endpoint="{{ url_for('api.get_knowledge_quality') }}">
+    <div class="card-header knowledge-quality-card__header">
+        <div>
+            <div class="card-title" id="knowledge-quality-title">
+                <i class="bi bi-shield-check" aria-hidden="true"></i> 知识检索质量
+            </div>
+            <p class="knowledge-quality-card__subtitle">只展示不含学生内容的运行状态，帮助管理员判断 AI 证据是否可用。</p>
+        </div>
+        <button class="btn btn-outline-primary btn-sm" type="button" id="knowledge-quality-refresh">
+            刷新状态
+        </button>
+    </div>
+    <div class="card-body">
+        <p class="knowledge-quality-card__status" id="knowledge-quality-status"
+            role="status" aria-live="polite" aria-atomic="true">正在加载检索状态…</p>
+        <div class="knowledge-quality-card__metrics" aria-label="知识检索质量指标">
+            <div>
+                <strong data-quality-field="requests">—</strong>
+                <span>检索请求</span>
+            </div>
+            <div>
+                <strong data-quality-field="mean_latency_ms">—</strong>
+                <span>平均延迟（毫秒）</span>
+            </div>
+            <div>
+                <strong data-quality-field="latency_sample_count">—</strong>
+                <span>延迟样本</span>
+            </div>
+            <div>
+                <strong data-quality-field="retrieval_timeout">—</strong>
+                <span>超时回退</span>
+            </div>
+            <div>
+                <strong data-quality-field="rate_limited">—</strong>
+                <span>限流回退</span>
+            </div>
+        </div>
+        <div class="knowledge-quality-card__breakdown">
+            <div>
+                <h3>状态分布</h3>
+                <div id="knowledge-quality-status-counts" class="knowledge-quality-card__chips"></div>
+            </div>
+            <div>
+                <h3>检索模式</h3>
+                <div id="knowledge-quality-mode-counts" class="knowledge-quality-card__chips"></div>
+            </div>
+        </div>
+    </div>
+</section>
 
 <div class="admin-actions card">
     <div class="card-header">
@@ -287,46 +322,13 @@
             
             log("Chart.js库已加载，版本: " + (Chart.version || "未知"));
             
-            // 从后端获取图表数据
-            let chartData;
-            try {
-                log("尝试解析后端传递的图表数据...");
-                const rawData = '{{ chart_data|safe }}';
-                log("原始数据长度: " + rawData.length + "字符");
-                
-                // 添加一个简单的验证，确保数据不为空
-                if (!rawData || rawData === '""' || rawData === '{}' || rawData.length < 10) {
-                    throw new Error("后端传递的图表数据为空或格式不正确");
-                }
-                
-                chartData = JSON.parse(rawData);
-                log("图表数据解析成功，包含 " + Object.keys(chartData).length + " 个图表配置");
-                
-                // 显示调试信息
-                log("作业数据: " + (chartData.assignments?.labels?.length || 0) + " 个标签");
-                log("分数数据: " + (chartData.scores?.labels?.length || 0) + " 个标签");
-                log("活动数据: " + (chartData.activity?.labels?.length || 0) + " 个标签");
-            } catch (e) {
-                log("解析图表数据时出错: " + e.message, 'error');
-                
-                // 使用最简单的默认数据，确保至少能看到一些东西
-                log("使用默认数据...", 'warning');
-                chartData = {
-                    assignments: {
-                        labels: ['默认示例1', '默认示例2', '默认示例3'],
-                        counts: [5, 3, 2]
-                    },
-                    scores: {
-                        labels: ['5分', '4分', '3分'],
-                        counts: [5, 3, 2],
-                        colors: ['#36a2eb', '#4bc0c0', '#ffcd56']
-                    },
-                    activity: {
-                        labels: Array.from({length: 30}, (_, i) => `第${i+1}天`),
-                        counts: Array.from({length: 30}, () => Math.floor(Math.random() * 5))
-                    }
-                };
-            }
+            // 后端传入的是结构化 JSON；使用 tojson，避免作业标题中的引号或
+            // </script> 片段破坏脚本上下文，也绝不在生产页面伪造统计数据。
+            const chartData = {{ chart_data|tojson }};
+            log("图表数据已加载，包含 " + Object.keys(chartData).length + " 个图表配置");
+            log("作业数据: " + (chartData.assignments?.labels?.length || 0) + " 个标签");
+            log("分数数据: " + (chartData.scores?.labels?.length || 0) + " 个标签");
+            log("活动数据: " + (chartData.activity?.labels?.length || 0) + " 个标签");
             
             // 初始化各个图表
             log("开始渲染图表...");
@@ -558,4 +560,5 @@
 {% endblock %}
 
 {% block extra_js %}
+<script src="{{ url_for('static', filename='js/knowledge-quality.js') }}"></script>
 {% endblock %}

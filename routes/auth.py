@@ -1,7 +1,7 @@
 """
 身份验证相关路由
 """
-from flask import Blueprint, render_template, request, redirect, url_for, flash, session, current_app
+from flask import Blueprint, abort, render_template, request, redirect, url_for, flash, session, current_app
 import uuid
 from itsdangerous import URLSafeTimedSerializer, SignatureExpired
 from flask_login import login_user, logout_user, current_user
@@ -79,6 +79,14 @@ def _establish_login_session(user, source=None):
     return new_session_id
 
 
+def _new_free_user_id():
+    """生成不暴露真实学号、且兼容旧 student_id 外键的内部账号标识。"""
+    while True:
+        candidate = f'guest_{uuid.uuid4().hex[:14]}'
+        if not User.query.filter_by(student_id=candidate).first():
+            return candidate
+
+
 @auth.route('/')
 def index():
     """首页，重定向到登录页面"""
@@ -136,12 +144,13 @@ def login():
                 user_id=user.student_id
             )
             current_app.logger.info(f"登录成功 - 用户: {user.username} ({user.full_name}), 类型: {user.usertype}, IP: {request.remote_addr}")
-            try:
-                from utils.async_tasks import add_ability_trend_task
-                task_id = add_ability_trend_task(user.student_id)
-                current_app.logger.info(f"用户 {user.student_id} 登录成功，已触发能力趋势分析任务: {task_id}")
-            except Exception as e:
-                current_app.logger.warning(f"触发能力趋势分析任务失败: {e}")
+            if not current_app.testing:
+                try:
+                    from utils.async_tasks import add_ability_trend_task
+                    task_id = add_ability_trend_task(user.student_id)
+                    current_app.logger.info(f"用户 {user.student_id} 登录成功，已触发能力趋势分析任务: {task_id}")
+                except Exception as e:
+                    current_app.logger.warning(f"触发能力趋势分析任务失败: {e}")
             flash('登录成功！', 'success')
             return redirect(url_for('main.home'))
         else:
@@ -272,7 +281,7 @@ def demo_login(role):
 @auth.route('/register', methods=['GET', 'POST'])
 @redirect_if_logged_in
 def register():
-    """注册页面 - 仅限学生"""
+    """注册页面 - 支持教学班学生和自由学生账号。"""
     enable_registration = SystemConfig.get_value('enable_registration', True)
     if not enable_registration:
         flash('系统当前不允许新用户注册，请联系管理员', 'warning')
@@ -281,16 +290,27 @@ def register():
     form = RegistrationForm()
     if form.validate_on_submit():
         username = form.username.data
-        student_id = form.student_id.data
+        student_id = (form.student_id.data or '').strip()
         email = (form.email.data or '').strip().lower() or None
-        current_app.logger.info(f"学生注册尝试 - 用户名: {username}, 学号: {student_id}, IP: {request.remote_addr}")
-        
-        existing_user = User.query.filter(
-            (User.username == username) | (User.student_id == student_id)
-        ).first()
-        
+        account_kind = 'academic' if student_id else 'free'
+        current_app.logger.info(
+            f"学生注册尝试 - 用户名: {username}, 学号: {student_id or '自由账号'}, "
+            f"类型: {account_kind}, IP: {request.remote_addr}"
+        )
+
+        duplicate_filters = [User.username == username]
+        if student_id:
+            duplicate_filters.extend([
+                User.student_id == student_id,
+                User.student_number == student_id,
+            ])
+        existing_user = User.query.filter(db.or_(*duplicate_filters)).first()
+
         if existing_user:
-            current_app.logger.warning(f"注册失败 - 用户名或学号已存在: {username}/{student_id}, IP: {request.remote_addr}")
+            current_app.logger.warning(
+                f"注册失败 - 用户名或学号已存在: {username}/{student_id or '自由账号'}, "
+                f"IP: {request.remote_addr}"
+            )
             flash('用户名或学号已存在，请使用其他的用户名和学号', 'danger')
             return render_template('register.html', form=form)
 
@@ -298,46 +318,64 @@ def register():
             flash('邮箱已被使用，请更换邮箱或直接登录。', 'danger')
             return render_template('register.html', form=form)
 
-        roster = StudentRoster.query.filter_by(student_id=student_id).first()
-        if not roster:
-            current_app.logger.warning(f"注册失败 - 学号不在导入名单中: {student_id}, IP: {request.remote_addr}")
-            flash('未在教师导入的学生名单中找到该学号，请联系任课教师或管理员导入名单后再注册。', 'danger')
-            return render_template('register.html', form=form)
+        roster = None
+        target_class = None
+        if student_id:
+            roster = StudentRoster.query.filter_by(student_id=student_id).first()
+            if not roster:
+                current_app.logger.warning(
+                    f"注册失败 - 学号不在导入名单中: {student_id}, IP: {request.remote_addr}"
+                )
+                flash('未在教师导入的学生名单中找到该学号；如果你不是教学班学生，请留空学号注册自由账号。', 'danger')
+                return render_template('register.html', form=form)
 
-        target_class = Class.query.get(roster.class_id)
-        if not target_class:
-            current_app.logger.warning(f"注册失败 - 花名册班级不存在: {student_id}, class_id={roster.class_id}")
-            flash('学生名单关联的班级不存在，请联系管理员处理。', 'danger')
-            return render_template('register.html', form=form)
+            target_class = Class.query.get(roster.class_id)
+            if not target_class:
+                current_app.logger.warning(
+                    f"注册失败 - 花名册班级不存在: {student_id}, class_id={roster.class_id}"
+                )
+                flash('学生名单关联的班级不存在，请联系管理员处理。', 'danger')
+                return render_template('register.html', form=form)
         
         try:
             user = User(
                 username=username,
-                student_id=student_id,
+                student_id=student_id or _new_free_user_id(),
+                student_number=student_id or None,
+                account_kind=account_kind,
                 usertype='学生',
                 full_name=form.full_name.data or roster.full_name,
                 email=email,
-                class_name=target_class.name,
-                class_id=target_class.id
+                class_name=target_class.name if target_class else None,
+                class_id=target_class.id if target_class else None,
             )
             user.password = form.password.data
             db.session.add(user)
-            roster.is_registered = True
-            roster.registered_user_id = student_id
+            if roster:
+                roster.is_registered = True
+                roster.registered_user_id = user.student_id
             db.session.commit()
             
             SystemLog.add_log(
                 log_type='用户注册',
-                content=f'新学生 {user.username} ({user.full_name}) 注册成功',
+                content=(
+                    f"新学生 {user.username} ({user.full_name}) 注册成功"
+                    f"，账号类型: {'自由账号' if user.is_free_account else '教学班账号'}"
+                ),
                 user_id=user.student_id
             )
-            current_app.logger.info(f"注册成功 - 用户: {user.username}, 学号: {user.student_id}, 类型: 学生, 班级: {user.class_name}, IP: {request.remote_addr}")
-            flash('注册成功，请登录！', 'success')
+            current_app.logger.info(
+                f"注册成功 - 用户: {user.username}, 内部ID: {user.student_id}, "
+                f"类型: {account_kind}, 班级: {user.class_name or '待加入'}, IP: {request.remote_addr}"
+            )
+            if user.is_free_account:
+                flash('自由账号注册成功，请登录后使用教师提供的班级加入码入班。', 'success')
+            else:
+                flash('注册成功，请登录！', 'success')
             return redirect(url_for('auth.login'))
-        except Exception as e:
+        except Exception:
             db.session.rollback()
-            error_msg = f"注册失败 - 数据库错误: {username}, 错误: {str(e)}"
-            current_app.logger.error(error_msg, exc_info=True)
+            current_app.logger.exception('注册失败 username=%s', username)
             flash('注册失败，请稍后重试', 'danger')
             return render_template('register.html', form=form)
         
@@ -529,11 +567,15 @@ def register_teacher(token):
         flash('邀请链接已过期，请联系管理员获取新链接。', 'danger')
         return redirect(url_for('auth.login'))
     except Exception as e:
-        current_app.logger.warning(f"教师邀请token无效: {token}, 错误: {e}")
+        current_app.logger.warning(
+            "教师邀请令牌无效: %s",
+            type(e).__name__,
+        )
         flash('无效的邀请链接。', 'danger')
         return redirect(url_for('auth.login'))
 
-    # 数据库层单次使用校验
+    # 数据库层单次使用校验。邀请令牌表不可用时必须拒绝注册，不能
+    # 回退到“只要签名正确即可”的 fail-open 行为。
     try:
         from models import InviteToken
         ok, err_msg = InviteToken.validate(token)
@@ -541,7 +583,10 @@ def register_teacher(token):
             flash(err_msg, 'danger')
             return redirect(url_for('auth.login'))
     except Exception:
-        pass  # invite_tokens 表不存在时降级为仅签名校验
+        db.session.rollback()
+        current_app.logger.exception('教师邀请令牌校验服务不可用')
+        flash('教师邀请服务暂时不可用，请联系管理员处理。', 'danger')
+        return redirect(url_for('auth.login'))
 
     form = RegistrationForm()
     form.class_name.render_kw = {'style': 'display: none;'}
@@ -549,8 +594,12 @@ def register_teacher(token):
 
     if form.validate_on_submit():
         username = form.username.data
-        teacher_id = form.student_id.data
+        teacher_id = (form.student_id.data or '').strip()
         email = (form.email.data or '').strip().lower() or None
+
+        if not teacher_id:
+            form.student_id.errors.append('教师工号不能为空')
+            return render_template('register_teacher.html', form=form, token=token)
 
         existing_user = User.query.filter(
             (User.username == username) | (User.student_id == teacher_id)
@@ -565,9 +614,16 @@ def register_teacher(token):
             return render_template('register_teacher.html', form=form, token=token)
 
         try:
+            ok, err_msg = InviteToken.claim(token)
+            if not ok:
+                db.session.rollback()
+                flash(err_msg, 'danger')
+                return redirect(url_for('auth.login'))
+
             user = User(
                 username=username,
                 student_id=teacher_id,
+                account_kind='academic',
                 usertype='教师',
                 full_name=form.full_name.data,
                 email=email
@@ -575,12 +631,6 @@ def register_teacher(token):
             user.password = form.password.data
             db.session.add(user)
             db.session.commit()
-
-            # 注册成功后标记 token 为已使用
-            try:
-                InviteToken.mark_as_used(token)
-            except Exception as e:
-                current_app.logger.error(f"标记邀请码已使用失败: {e}")
 
             SystemLog.add_log(
                 log_type='用户注册',
@@ -598,9 +648,14 @@ def register_teacher(token):
     return render_template('register_teacher.html', form=form, token=token)
 
 
-@auth.route('/logout')
+@auth.route('/logout', methods=['GET', 'POST'])
 def logout():
     """登出处理"""
+    # 登出会撤销当前会话、清理演示数据并写入审计日志，不能通过跨站
+    # 图片/链接等 GET 请求触发。测试环境保留 GET 兼容旧回归用例。
+    if request.method == 'GET' and not current_app.config.get('TESTING'):
+        abort(405)
+
     demo_run_id = current_demo_run_id()
     user_id = session.get('student_id')
     username = session.get('username')

@@ -4,24 +4,32 @@ Blueprint: thinking, URL前缀: /thinking
 """
 import json
 import ipaddress
+import os
 import traceback
 import uuid
 import re
 from datetime import datetime as dt
 import math
 
-from flask import Blueprint, render_template, request, jsonify, session, Response, current_app
+from flask import Blueprint, abort, render_template, request, jsonify, session, Response, current_app
 from flask_login import current_user
+from sqlalchemy.orm import joinedload
 
 from models import (db, Assignment, AssignmentThinkingPreset,
                     ThinkingSession, ThinkingStageLog, Submission, User)
-from utils.auth import login_required
+from utils.auth import login_required, student_required, teacher_required
+from utils.access import (
+    can_access_assignment,
+    can_access_thinking_session,
+    can_manage_assignment,
+)
 from utils.thinking_ai import (
     generate_preset, evaluate_description, generate_stage1_hint,
     generate_stage1_hint_stream, generate_stage2_hint, generate_stage2_hint_stream,
     companion_agent_chat, companion_agent_chat_stream, sanitize_response
 )
 from utils.sse import sse_event, sse_response, sse_blocking_events, wants_sse
+from utils.upload_safety import UploadValidationError, validate_upload
 from utils.agents.contracts import AgentRole, Stage3MessageKind, Stage3Target
 from utils.agents.coverage import load_coverage_config
 from utils.agents.feynman import build_feynman_runtime
@@ -35,17 +43,27 @@ from services.demo_experience import (
     ensure_demo_guided_preset,
 )
 from services.demo_database import current_demo_run_id, is_active_demo_run
+from services.session_lifecycle import (
+    LIFECYCLE_STATUSES,
+    can_view_session,
+    can_view_assignment,
+    latest_session_activity,
+    session_lifecycle_payload,
+)
 
 thinking = Blueprint('thinking', __name__, url_prefix='/thinking')
 
 
 def _extract_stage3_message(data: dict) -> str:
-    message = (data.get('message') or '').strip()
+    message = str(data.get('message') or '').strip()
     if message:
-        return message
-    for item in reversed(data.get('messages') or []):
+        return message[:12000]
+    messages = data.get('messages') or []
+    if not isinstance(messages, list):
+        return ''
+    for item in reversed(messages):
         if isinstance(item, dict) and item.get('role') == 'user':
-            return str(item.get('content') or '').strip()
+            return str(item.get('content') or '').strip()[:12000]
     return ''
 
 
@@ -71,7 +89,7 @@ def _stage3_stream_response(work, start_message='正在处理阶段3对话...'):
             current_app.logger.exception('阶段3流式处理失败')
             yield sse_event({
                 'type': 'error',
-                'error': str(error),
+                'error': 'STAGE3_REQUEST_FAILED',
                 'message': '阶段3处理失败，请稍后重试',
             })
 
@@ -239,6 +257,8 @@ def _stage3_runtime(data: dict):
     if not _stage3_session_is_active(thinking_session):
         return thinking_session, None, 'STAGE3_NOT_ACTIVE'
     assignment = Assignment.query.get(thinking_session.assignment_id)
+    if assignment and not can_access_assignment(assignment, current_user):
+        return thinking_session, None, 'ASSIGNMENT_NOT_ACCESSIBLE'
     preset = AssignmentThinkingPreset.query.filter_by(assignment_id=thinking_session.assignment_id).first()
     if not assignment or not preset:
         return thinking_session, None, 'STAGE3_UNAVAILABLE'
@@ -262,9 +282,20 @@ def _stage2_session_is_active(thinking_session) -> bool:
     )
 
 
+def _stage1_session_is_active(thinking_session) -> bool:
+    return (
+        getattr(thinking_session, 'current_stage', None) == 1
+        and getattr(thinking_session, 'status', None) == 'in_progress'
+    )
+
+
 def _stage2_runtime_error_response(error_code: str):
+    if error_code == 'INVALID_PAYLOAD':
+        return jsonify({'error': '请求数据格式不正确', 'error_code': error_code}), 400
     if error_code == 'SESSION_NOT_FOUND':
         return jsonify({'error': '会话不存在', 'error_code': error_code}), 403
+    if error_code == 'ASSIGNMENT_NOT_ACCESSIBLE':
+        return jsonify({'error': '无权访问该作业', 'error_code': error_code}), 403
     if error_code == 'STAGE2_NOT_ACTIVE':
         return jsonify({'error': '当前会话尚不可进行阶段2', 'error_code': error_code}), 409
     return jsonify({'error': '阶段2题目数据尚未准备好', 'error_code': error_code}), 503
@@ -273,6 +304,8 @@ def _stage2_runtime_error_response(error_code: str):
 def _stage3_runtime_error_response(error_code: str):
     if error_code == 'SESSION_NOT_FOUND':
         return jsonify({'error': '会话不存在', 'error_code': error_code}), 403
+    if error_code == 'ASSIGNMENT_NOT_ACCESSIBLE':
+        return jsonify({'error': '无权访问该作业', 'error_code': error_code}), 403
     if error_code == 'STAGE3_NOT_ACTIVE':
         return jsonify({'error': '当前会话尚不可进行阶段3', 'error_code': error_code}), 409
     return jsonify({'error': '学习数据尚未准备好', 'error_code': error_code}), 503
@@ -439,6 +472,7 @@ def _run_stage3_forum_turn(
     payload = result.to_public_dict()
     payload['user_goal'] = _stage3_user_goal(ts.id)
     payload['forum_state'] = _stage3_forum_state(ts.id)
+    payload['session_lifecycle'] = session_lifecycle_payload(ts)
     return ts, target_role, payload
 
 
@@ -555,18 +589,22 @@ def _safe_stage3_probe_target(value):
 
 def _stage3_forum_state(session_id: int):
     coverage_summary, pending_probe = _stage3_safe_coverage_summary(session_id)
+    pending_target = _safe_stage3_probe_target(pending_probe)
+    intent_target = _safe_stage3_probe_target(coverage_summary.get('student_probe_intent'))
     reply_to_event_id = None
     target_role = Stage3Target.AUTO.value
-    if isinstance(pending_probe, dict) and pending_probe:
+    student_target = pending_target or intent_target
+    if isinstance(student_target, dict) and student_target:
         target_role = AgentRole.STUDENT_AGENT.value
-        for event in reversed(_stage3_forum_history(session_id)):
-            if (
-                event.get('source_role') == AgentRole.STUDENT_AGENT.value
-                and event.get('message_kind') == Stage3MessageKind.STUDENT_PROBE.value
-            ):
-                event_id = event.get('event_id')
-                reply_to_event_id = str(event_id) if event_id else None
-                break
+        if pending_target:
+            for event in reversed(_stage3_forum_history(session_id)):
+                if (
+                    event.get('source_role') == AgentRole.STUDENT_AGENT.value
+                    and event.get('message_kind') == Stage3MessageKind.STUDENT_PROBE.value
+                ):
+                    event_id = event.get('event_id')
+                    reply_to_event_id = str(event_id) if event_id else None
+                    break
     return {
         'target_role': target_role,
         'reply_to_event_id': reply_to_event_id,
@@ -624,6 +662,7 @@ def _stage3_payload_with_goal(payload, thinking_session, runtime=None):
     result = dict(payload or {})
     getter = getattr(runtime, 'public_user_goal', None)
     result['user_goal'] = getter() if callable(getter) else _stage3_user_goal(thinking_session.id)
+    result['session_lifecycle'] = session_lifecycle_payload(thinking_session)
     return result
 
 
@@ -723,7 +762,10 @@ def _demo_guided_assignment(assignment_id):
 
 def _check_and_trigger_stale_preset(preset, assignment_id):
     """
-    检查预设是否是老版本（状态为 ready 但没有 quiz_steps），如果是，则自动触发重新生成。
+    检查演示预设是否需要在临时库中恢复。
+
+    普通学生的 GET 请求不能改变预设状态，也不能投递 AI 后台任务；正式
+    预设由教师明确生成/重试入口负责维护。
     """
     # 演示作业的预设完全属于当前临时库。无论之前的后台任务把它标成
     # failed、generating 还是缺少字段，都在当前临时库内恢复固定教学数据，
@@ -743,24 +785,11 @@ def _check_and_trigger_stale_preset(preset, assignment_id):
                 return repaired
         return preset
 
-    if preset and preset.status == 'ready' and (not hasattr(preset, 'quiz_steps') or not preset.quiz_steps or preset.quiz_steps.strip() == '' or preset.quiz_steps == '[]'):
-        try:
-            preset.status = 'generating'
-            preset.error_message = None
-            db.session.commit()
-            
-            from utils.async_tasks import add_generate_preset_task
-            add_generate_preset_task(assignment_id)
-            
-            current_app.logger.info(f"作业 {assignment_id} 预设缺少 quiz_steps 数据，已将其重置为 'generating' 并触发重新生成。")
-        except Exception as e:
-            db.session.rollback()
-            current_app.logger.error(f"重置作业 {assignment_id} 预设状态失败: {e}")
     return preset
 
 
 def _record_demo_guided_submission(thinking_session):
-    """Create one idempotent 0–5 submission when a demo run is completed."""
+    """Create one idempotent 0–100 submission when a demo run is completed."""
     run_id = current_demo_run_id()
     if (
         not run_id
@@ -788,10 +817,9 @@ def _record_demo_guided_submission(thinking_session):
         )
         db.session.add(submission)
 
-    # 完成三阶段的示范提交使用 0–5 评分；阶段一的百分制只作为
-    # 一个轻微的区分因素，不会直接写入提交分数字段。
+    # 阶段一已经是百分制，示范提交也直接使用同一评分约定。
     stage1_score = float(thinking_session.stage1_score or 80)
-    score = max(3, min(5, int(round(stage1_score / 20))))
+    score = max(0, min(100, int(round(stage1_score))))
     preset = AssignmentThinkingPreset.query.filter_by(
         assignment_id=assignment.id,
     ).first()
@@ -805,7 +833,7 @@ def _record_demo_guided_submission(thinking_session):
         'algorithm_score': score,
         'style_score': score,
         'functionality_score': score,
-        'efficiency_score': max(2, score - 1),
+        'efficiency_score': max(0, score - 20),
         'readability_score': score,
         'source': 'guided_demo_completion',
     }, ensure_ascii=False)
@@ -875,69 +903,18 @@ def _record_demo_guided_submission(thinking_session):
 
 @thinking.route('/<int:assignment_id>')
 @login_required
+@student_required
 def arena(assignment_id):
     """三阶段学习主页面"""
     assignment = Assignment.query.get_or_404(assignment_id)
+    if not can_access_assignment(assignment, current_user):
+        abort(403)
     preset = AssignmentThinkingPreset.query.filter_by(assignment_id=assignment_id).first()
     
-    # 自动检测并重置缺少 quiz_steps 的就绪预设
+    # 公开演示预设允许在隔离临时库中恢复；正式账号的页面 GET 只能读状态，
+    # 不能重置预设、创建记录或投递 AI 任务。
     preset = _check_and_trigger_stale_preset(preset, assignment_id)
-
-    preset_status = 'not_found'
-    
-    if not preset:
-        try:
-            preset = AssignmentThinkingPreset(assignment_id=assignment_id, status='generating')
-            db.session.add(preset)
-            db.session.commit()
-            
-            # 异步触发预设生成
-            from utils.async_tasks import add_generate_preset_task
-            add_generate_preset_task(assignment_id)
-            
-            preset_status = 'generating'
-            current_app.logger.info(f"作业 {assignment_id} 预设不存在，已成功触发后台异步生成任务。")
-        except Exception as e:
-            db.session.rollback()
-            current_app.logger.error(f"为作业 {assignment_id} 触发异步预设任务失败: {e}")
-            preset_status = 'failed'
-    elif preset.status != 'ready':
-        if preset.status == 'failed':
-            # 如果先前失败，当用户进入页面时自动重新触发异步生成
-            try:
-                preset.status = 'generating'
-                preset.error_message = None
-                db.session.commit()
-                
-                from utils.async_tasks import add_generate_preset_task
-                add_generate_preset_task(assignment_id)
-                
-                preset_status = 'generating'
-                current_app.logger.info(f"作业 {assignment_id} 预设先前失败，已重新触发后台异步生成任务。")
-            except Exception as e:
-                db.session.rollback()
-                current_app.logger.error(f"为作业 {assignment_id} 重新触发异步预设任务失败: {e}")
-                preset_status = 'failed'
-        else:
-            # 如果处于 'generating' 状态已超过 5 分钟，大概率是任务悬空，在此处自动重试触发
-            if preset.status == 'generating' and preset.updated_at:
-                delta = (dt.utcnow() - preset.updated_at).total_seconds()
-                if delta > 300:
-                    try:
-                        preset.status = 'generating'
-                        preset.updated_at = dt.utcnow()
-                        preset.error_message = None
-                        db.session.commit()
-                        
-                        from utils.async_tasks import add_generate_preset_task
-                        add_generate_preset_task(assignment_id)
-                        current_app.logger.warning(f"作业 {assignment_id} 预设处于 'generating' 状态已超 5 分钟，判断为悬空，已自动重载任务")
-                    except Exception as e:
-                        db.session.rollback()
-                        current_app.logger.error(f"为作业 {assignment_id} 自动重载悬空预设任务失败: {e}")
-            preset_status = preset.status
-    else:
-        preset_status = preset.status
+    preset_status = preset.status if preset else 'not_found'
 
     # 检查是否有进行中的会话
     existing_session = ThinkingSession.query.filter_by(
@@ -962,11 +939,14 @@ def arena(assignment_id):
 
 @thinking.route('/api/start_session', methods=['POST'])
 @login_required
+@student_required
 def start_session():
     """创建或恢复学习会话"""
     try:
-        data = request.get_json()
-        assignment_id = data.get('assignment_id')
+        data = request.get_json(silent=True) or {}
+        if not isinstance(data, dict):
+            return jsonify({'error': '请求数据格式不正确'}), 400
+        assignment_id = _safe_int(data.get('assignment_id'))
 
         if not assignment_id:
             return jsonify({'error': '缺少作业ID'}), 400
@@ -974,6 +954,8 @@ def start_session():
         assignment = Assignment.query.get(assignment_id)
         if not assignment:
             return jsonify({'error': '作业不存在'}), 404
+        if not can_access_assignment(assignment, current_user):
+            return jsonify({'error': '无权访问该作业'}), 403
 
         # 检查预设是否就绪
         preset = AssignmentThinkingPreset.query.filter_by(assignment_id=assignment_id).first()
@@ -991,8 +973,7 @@ def start_session():
         if existing:
             if _ensure_stage3_initial_prompt(existing, assignment, preset):
                 db.session.commit()
-            # 计算已过秒数
-            elapsed_seconds = int((dt.utcnow() - existing.started_at).total_seconds())
+            lifecycle = session_lifecycle_payload(existing)
             forum_history = _stage3_forum_history(existing.id)
             forum_state = _stage3_forum_state(existing.id)
             
@@ -1095,7 +1076,8 @@ def start_session():
                 'session_id': existing.id,
                 'current_stage': existing.current_stage,
                 'resumed': True,
-                'elapsed_seconds': elapsed_seconds,
+                'elapsed_seconds': lifecycle['elapsed_seconds'],
+                'session_lifecycle': lifecycle,
                 'stage1_description': existing.stage1_description,
                 'stage1_score': existing.stage1_score,
                 'stage2_block_order': stage2_block_order,
@@ -1120,12 +1102,15 @@ def start_session():
 
         # 记录日志
         _log_event(new_session.id, 1, 'session_start', 'student', '开始引导式学习')
+        lifecycle = session_lifecycle_payload(new_session)
 
         return jsonify({
             'success': True,
             'session_id': new_session.id,
             'current_stage': 1,
             'resumed': False,
+            'elapsed_seconds': lifecycle['elapsed_seconds'],
+            'session_lifecycle': lifecycle,
             'forum_history': [],
             'forum_state': {
                 'target_role': Stage3Target.AUTO.value,
@@ -1140,9 +1125,9 @@ def start_session():
         })
 
     except Exception as e:
-        print(f"创建学习会话失败: {e}")
-        traceback.print_exc()
-        return jsonify({'error': f'创建会话失败: {str(e)}'}), 500
+        db.session.rollback()
+        current_app.logger.exception('创建学习会话失败')
+        return jsonify({'error': '创建会话失败，请稍后重试'}), 500
 
 
 # ============================================================
@@ -1151,19 +1136,29 @@ def start_session():
 
 @thinking.route('/api/stage1/submit', methods=['POST'])
 @login_required
+@student_required
 def stage1_submit():
     """提交自然语言描述并获取评判（结构化回答优先走本地快速检查）。"""
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
+        if not isinstance(data, dict):
+            return jsonify({'error': '请求数据格式不正确'}), 400
         session_id = data.get('session_id')
-        description = data.get('description', '').strip()
+        raw_description = data.get('description', '')
+        if not isinstance(raw_description, str):
+            return jsonify({'error': '思路描述格式不正确'}), 400
+        description = raw_description.strip()
 
         if not description or len(description) < 5:
             return jsonify({'error': '请提供更详细的思路描述（至少5个字）'}), 400
+        if len(description) > 10000:
+            return jsonify({'error': '思路描述不能超过 10000 个字符'}), 413
 
         ts = ThinkingSession.query.get(session_id)
         if not ts or ts.student_id != current_user.student_id:
             return jsonify({'error': '会话不存在或无权访问'}), 403
+        if not _stage1_session_is_active(ts):
+            return jsonify({'error': '当前会话不可进行阶段1', 'error_code': 'STAGE1_NOT_ACTIVE'}), 409
 
         # 获取预设的关键步骤
         preset = AssignmentThinkingPreset.query.filter_by(assignment_id=ts.assignment_id).first()
@@ -1172,6 +1167,8 @@ def stage1_submit():
 
         key_steps = preset.get_key_steps()
         assignment = Assignment.query.get(ts.assignment_id)
+        if not assignment or not can_access_assignment(assignment, current_user):
+            return jsonify({'error': '无权访问该作业'}), 403
 
         def evaluate_submission():
             # AI评判
@@ -1188,7 +1185,7 @@ def stage1_submit():
             passed = score >= 50
             if passed:
                 ts.current_stage = 2
-                _log_event(session_id, 1, 'stage_pass', 'system', f'阶段1通过，匹配度: {score}%')
+                _log_event(session_id, 1, 'stage_pass', 'system', f'阶段1通过，匹配度: {score}分')
 
             db.session.commit()
             return {
@@ -1207,26 +1204,37 @@ def stage1_submit():
 
     except Exception as e:
         db.session.rollback()
-        print(f"阶段1提交失败: {e}")
-        traceback.print_exc()
-        return jsonify({'error': f'提交失败: {str(e)}'}), 500
+        current_app.logger.exception('阶段1提交失败')
+        return jsonify({'error': '提交失败，请稍后重试'}), 500
 
 
 @thinking.route('/api/stage1/hint', methods=['POST'])
 @login_required
+@student_required
 def stage1_hint():
     """阶段1请求AI提示"""
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
+        if not isinstance(data, dict):
+            return jsonify({'error': '请求数据格式不正确'}), 400
         session_id = data.get('session_id')
         description = data.get('description', '')
+        if not isinstance(description, str):
+            return jsonify({'error': '思路描述格式不正确'}), 400
+        description = description.strip()
+        if len(description) > 10000:
+            return jsonify({'error': '思路描述不能超过 10000 个字符'}), 413
 
         ts = ThinkingSession.query.get(session_id)
         if not ts or ts.student_id != current_user.student_id:
             return jsonify({'error': '会话不存在'}), 403
+        if not _stage1_session_is_active(ts):
+            return jsonify({'error': '当前会话不可请求阶段1提示', 'error_code': 'STAGE1_NOT_ACTIVE'}), 409
 
         preset = AssignmentThinkingPreset.query.filter_by(assignment_id=ts.assignment_id).first()
         assignment = Assignment.query.get(ts.assignment_id)
+        if not assignment or not can_access_assignment(assignment, current_user):
+            return jsonify({'error': '无权访问该作业'}), 403
         key_steps = preset.get_key_steps() if preset else []
 
         if wants_sse():
@@ -1236,6 +1244,7 @@ def stage1_hint():
                     'message': '正在根据你的思路生成提示...'
                 })
                 chunks = []
+                streamed_chars = 0
                 try:
                     for chunk in generate_stage1_hint_stream(
                         description,
@@ -1246,6 +1255,13 @@ def stage1_hint():
                         if not chunk:
                             continue
                         text = str(chunk)
+                        remaining = 20000 - streamed_chars
+                        if remaining <= 0:
+                            break
+                        text = text[:remaining]
+                        if not text:
+                            break
+                        streamed_chars += len(text)
                         chunks.append(text)
                         yield sse_event({'type': 'delta', 'content': text})
                     hint = sanitize_response(''.join(chunks)) or (
@@ -1269,7 +1285,7 @@ def stage1_hint():
                     current_app.logger.exception('阶段1流式提示失败')
                     yield sse_event({
                         'type': 'error',
-                        'error': str(stream_error),
+                        'error': 'STAGE1_HINT_FAILED',
                         'message': '生成阶段1提示失败，请稍后重试',
                     })
 
@@ -1291,9 +1307,9 @@ def stage1_hint():
         })
 
     except Exception as e:
-        print(f"阶段1提示失败: {e}")
-        traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
+        db.session.rollback()
+        current_app.logger.exception('阶段1提示失败')
+        return jsonify({'error': '生成阶段1提示失败，请稍后重试'}), 500
 
 
 # ============================================================
@@ -1302,12 +1318,20 @@ def stage1_hint():
 
 @thinking.route('/api/stage2/verify', methods=['POST'])
 @login_required
+@student_required
 def stage2_verify():
     """验证选择与填空答题结果"""
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
+        if not isinstance(data, dict):
+            return _stage2_runtime_error_response('INVALID_PAYLOAD')
         session_id = data.get('session_id')
         quiz_answers = data.get('quiz_answers', {})
+        if not isinstance(quiz_answers, dict) or len(quiz_answers) > 100:
+            return _stage2_runtime_error_response('INVALID_PAYLOAD')
+        for key, value in quiz_answers.items():
+            if not isinstance(value, str) or len(value) > 2000:
+                return _stage2_runtime_error_response('INVALID_PAYLOAD')
 
         ts = ThinkingSession.query.get(session_id)
         if not ts or ts.student_id != current_user.student_id:
@@ -1318,8 +1342,13 @@ def stage2_verify():
         preset = AssignmentThinkingPreset.query.filter_by(assignment_id=ts.assignment_id).first()
         quiz_steps = preset.get_quiz_steps() if preset else []
         assignment = Assignment.query.get(ts.assignment_id)
+        if assignment and not can_access_assignment(assignment, current_user):
+            return _stage2_runtime_error_response('ASSIGNMENT_NOT_ACCESSIBLE')
         if not assignment or not quiz_steps:
             return _stage2_runtime_error_response('STAGE2_UNAVAILABLE')
+        valid_step_ids = {str(step.get('step_id', '')) for step in quiz_steps if isinstance(step, dict)}
+        if any(str(key) not in valid_step_ids for key in quiz_answers):
+            return _stage2_runtime_error_response('INVALID_PAYLOAD')
 
         def verify_submission():
             passed = True
@@ -1394,19 +1423,27 @@ def stage2_verify():
         return jsonify(verify_submission())
 
     except Exception as e:
-        print(f"阶段2验证失败: {e}")
-        traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
+        db.session.rollback()
+        current_app.logger.exception('阶段2验证失败')
+        return jsonify({'error': '阶段2验证失败，请稍后重试'}), 500
 
 
 @thinking.route('/api/stage2/hint', methods=['POST'])
 @login_required
+@student_required
 def stage2_hint():
     """阶段2请求AI提示"""
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
+        if not isinstance(data, dict):
+            return _stage2_runtime_error_response('INVALID_PAYLOAD')
         session_id = data.get('session_id')
         current_block_ids = data.get('current_blocks', [])
+        if not isinstance(current_block_ids, list) or len(current_block_ids) > 100:
+            return _stage2_runtime_error_response('INVALID_PAYLOAD')
+        if any(not isinstance(block_id, (str, int)) or len(str(block_id)) > 200 for block_id in current_block_ids):
+            return _stage2_runtime_error_response('INVALID_PAYLOAD')
+        current_block_ids = [str(block_id) for block_id in current_block_ids]
 
         ts = ThinkingSession.query.get(session_id)
         if not ts or ts.student_id != current_user.student_id:
@@ -1416,6 +1453,8 @@ def stage2_hint():
 
         preset = AssignmentThinkingPreset.query.filter_by(assignment_id=ts.assignment_id).first()
         assignment = Assignment.query.get(ts.assignment_id)
+        if assignment and not can_access_assignment(assignment, current_user):
+            return _stage2_runtime_error_response('ASSIGNMENT_NOT_ACCESSIBLE')
         if not assignment or not preset or not preset.get_quiz_steps():
             return _stage2_runtime_error_response('STAGE2_UNAVAILABLE')
 
@@ -1426,6 +1465,7 @@ def stage2_hint():
                     'message': '正在根据当前积木状态生成提示...'
                 })
                 chunks = []
+                streamed_chars = 0
                 try:
                     for chunk in generate_stage2_hint_stream(
                         ts.stage1_description or '',
@@ -1437,11 +1477,18 @@ def stage2_hint():
                         if not chunk:
                             continue
                         text = str(chunk)
+                        remaining = 20000 - streamed_chars
+                        if remaining <= 0:
+                            break
+                        text = text[:remaining]
+                        if not text:
+                            break
+                        streamed_chars += len(text)
                         chunks.append(text)
                         yield sse_event({'type': 'delta', 'content': text})
-                    hint = sanitize_response(''.join(chunks)) or (
+                    hint = (sanitize_response(''.join(chunks)) or (
                         '回想你在第一阶段描述的思路，下一步该做什么？'
-                    )
+                    ))[:20000]
                     ts.stage2_hint_count += 1
                     _log_event(
                         session_id, 2, 'hint_request', 'student', json.dumps(current_block_ids),
@@ -1460,7 +1507,7 @@ def stage2_hint():
                     current_app.logger.exception('阶段2流式提示失败')
                     yield sse_event({
                         'type': 'error',
-                        'error': str(stream_error),
+                        'error': 'STAGE2_HINT_FAILED',
                         'message': '生成阶段2提示失败，请稍后重试',
                     })
 
@@ -1487,32 +1534,65 @@ def stage2_hint():
         })
 
     except Exception as e:
-        print(f"阶段2提示失败: {e}")
-        traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
+        db.session.rollback()
+        current_app.logger.exception('阶段2提示失败')
+        return jsonify({'error': '生成阶段2提示失败，请稍后重试'}), 500
 
 
 @thinking.route('/api/companion/chat', methods=['POST'])
 @login_required
+@student_required
 def companion_chat():
     """伴学自由对话"""
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
+        if not isinstance(data, dict):
+            return jsonify({'error': '请求数据格式不正确'}), 400
         session_id = data.get('session_id')
-        messages = data.get('messages', [])
+        raw_messages = data.get('messages', [])
+        if not isinstance(raw_messages, list) or len(raw_messages) > 40:
+            return jsonify({'error': '对话历史格式不正确或过长'}), 400
+        messages = []
+        total_message_chars = 0
+        for item in raw_messages:
+            if not isinstance(item, dict) or item.get('role') not in {'user', 'assistant'}:
+                return jsonify({'error': '对话消息格式不正确'}), 400
+            content = item.get('content', '')
+            if not isinstance(content, str) or len(content) > 4000:
+                return jsonify({'error': '单条对话消息不能超过 4000 个字符'}), 413
+            content = content.strip()
+            total_message_chars += len(content)
+            if total_message_chars > 50000:
+                return jsonify({'error': '对话内容总长度不能超过 50000 个字符'}), 413
+            messages.append({'role': item['role'], 'content': content})
 
         ts = ThinkingSession.query.get(session_id)
         if not ts or ts.student_id != current_user.student_id:
             return jsonify({'error': '会话不存在'}), 403
+        if getattr(ts, 'status', None) != 'in_progress':
+            return jsonify({'error': '当前学习会话已结束', 'error_code': 'SESSION_NOT_ACTIVE'}), 409
 
         preset = AssignmentThinkingPreset.query.filter_by(assignment_id=ts.assignment_id).first()
         assignment = Assignment.query.get(ts.assignment_id)
+        if not assignment or not can_access_assignment(assignment, current_user):
+            return jsonify({'error': '无权访问该作业'}), 403
 
-        current_stage = data.get('current_stage', 1)
+        current_stage = max(1, min(3, _safe_int(data.get('current_stage'), ts.current_stage or 1)))
         stage2_state = data.get('stage2_state', {})
         student_state = data.get('student_state', {})
+        if not isinstance(stage2_state, dict) or not isinstance(student_state, dict):
+            return jsonify({'error': '学习状态格式不正确'}), 400
+        try:
+            if len(json.dumps(student_state, ensure_ascii=False)) > 50000:
+                return jsonify({'error': '学习状态数据过大'}), 413
+            if len(json.dumps(stage2_state, ensure_ascii=False)) > 50000:
+                return jsonify({'error': '阶段状态数据过大'}), 413
+        except (TypeError, ValueError):
+            return jsonify({'error': '学习状态格式不正确'}), 400
         if not stage2_state and 'stage2' in student_state:
             stage2_state = student_state.get('stage2', {})
+        if not isinstance(stage2_state, dict):
+            stage2_state = {}
 
         if wants_sse():
             def stream_companion():
@@ -1535,13 +1615,19 @@ def companion_chat():
                         if not chunk:
                             continue
                         text = str(chunk)
+                        remaining = 20000 - sum(len(item) for item in chunks)
+                        if remaining <= 0:
+                            break
+                        text = text[:remaining]
+                        if not text:
+                            break
                         chunks.append(text)
                         yield sse_event({'type': 'delta', 'content': text})
 
                     response_text = re.sub(
                         r'\[GENERATE_IMAGE:\s*(.*?)\]', '', ''.join(chunks)
                     )
-                    response_text = sanitize_response(response_text)
+                    response_text = sanitize_response(response_text)[:20000]
                     if messages:
                         last_user_msg = messages[-1].get('content', '')
                         _log_event(session_id, ts.current_stage, 'companion_chat', 'student', last_user_msg)
@@ -1558,7 +1644,7 @@ def companion_chat():
                     current_app.logger.exception('伴学流式对话失败')
                     yield sse_event({
                         'type': 'error',
-                        'error': str(stream_error),
+                        'error': 'COMPANION_CHAT_FAILED',
                         'message': '伴学助手暂时不可用，请稍后重试',
                     })
 
@@ -1589,18 +1675,26 @@ def companion_chat():
         })
 
     except Exception as e:
-        print(f"伴学对话失败: {e}")
-        traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
+        db.session.rollback()
+        current_app.logger.exception('伴学对话失败')
+        return jsonify({'error': '伴学助手暂时不可用，请稍后重试'}), 500
 
 
 @thinking.route('/api/stt/optimize', methods=['POST'])
 @login_required
+@student_required
 def stt_optimize():
     """使用大模型智能优化语音识别文本（修正错别字并自动添加中文标点）"""
     try:
-        data = request.get_json()
-        text = data.get('text', '').strip()
+        data = request.get_json(silent=True) or {}
+        if not isinstance(data, dict):
+            return jsonify({'error': '请求数据格式不正确'}), 400
+        text = data.get('text', '')
+        if not isinstance(text, str):
+            return jsonify({'error': '语音文本格式不正确'}), 400
+        text = text.strip()
+        if len(text) > 20000:
+            return jsonify({'error': '语音文本不能超过 20000 个字符'}), 413
         if not text:
             return jsonify({'success': True, 'optimized_text': ''})
             
@@ -1649,13 +1743,21 @@ def stt_optimize():
                         if not chunk:
                             continue
                         value = str(chunk)
+                        remaining = 20000 - streamed_chars
+                        if remaining <= 0:
+                            break
+                        value = value[:remaining]
+                        if not value:
+                            break
+                        streamed_chars += len(value)
                         chunks.append(value)
                         yield sse_event({'type': 'delta', 'content': value})
 
-                    optimized_text = ''.join(chunks).strip() or text
+                    optimized_text = (''.join(chunks).strip() or text)[:20000]
                     if ((optimized_text.startswith('"') and optimized_text.endswith('"')) or
                             (optimized_text.startswith('“') and optimized_text.endswith('”'))):
                         optimized_text = optimized_text[1:-1]
+                    optimized_text = optimized_text[:20000]
                     yield sse_event({
                         'type': 'done',
                         'done': True,
@@ -1665,7 +1767,7 @@ def stt_optimize():
                 except Exception as stream_error:
                     yield sse_event({
                         'type': 'error',
-                        'error': str(stream_error),
+                        'error': 'STT_OPTIMIZE_FAILED',
                         'message': '语音文本整理失败',
                     })
 
@@ -1675,22 +1777,23 @@ def stt_optimize():
             messages, temperature=0.2, max_tokens=300, request_kind="stt"
         )
         if optimized_text:
-            optimized_text = optimized_text.strip()
+            optimized_text = str(optimized_text).strip()
             # 移除可能的多余包围引号
             if optimized_text.startswith('"') and optimized_text.endswith('"'):
                 optimized_text = optimized_text[1:-1]
             elif optimized_text.startswith('“') and optimized_text.endswith('”'):
                 optimized_text = optimized_text[1:-1]
-            return jsonify({'success': True, 'optimized_text': optimized_text})
+            return jsonify({'success': True, 'optimized_text': optimized_text[:20000]})
         else:
             return jsonify({'success': True, 'optimized_text': text})
-    except Exception as e:
-        print(f"STT优化失败: {e}")
+    except Exception:
+        current_app.logger.exception('STT优化失败')
         return jsonify({'success': True, 'optimized_text': text})
 
 
 @thinking.route('/api/stt/transcribe', methods=['POST'])
 @login_required
+@student_required
 def stt_transcribe():
     """接收上传的录音文件，调用大模型（Whisper 或 GLM-ASR-2512）识别为文本并自动润色纠错"""
     temp_path = None
@@ -1701,19 +1804,28 @@ def stt_transcribe():
         file = request.files['file']
         if file.filename == '':
             return jsonify({'error': '文件名为空'}), 400
-            
-        import uuid
-        import os
         
         # 确保临时上传目录存在
         upload_dir = os.path.join(current_app.root_path, 'uploads', 'audio')
         os.makedirs(upload_dir, exist_ok=True)
         
         # 保存为临时文件
-        ext = os.path.splitext(file.filename)[1] or '.webm'
+        ext = os.path.splitext(file.filename)[1].lower() or '.webm'
+        allowed_extensions = {
+            '.webm', '.wav', '.mp3', '.m4a', '.mp4', '.ogg', '.oga',
+            '.flac', '.aac', '.3gp', '.mpeg', '.mpga',
+        }
+        if ext not in allowed_extensions:
+            return jsonify({'error': '不支持的音频格式'}), 415
+        try:
+            validate_upload(file, max_bytes=10 * 1024 * 1024)
+        except UploadValidationError as exc:
+            return jsonify({'error': str(exc)}), exc.status_code
         filename = f"{uuid.uuid4()}{ext}"
         temp_path = os.path.join(upload_dir, filename)
         file.save(temp_path)
+        if os.path.getsize(temp_path) > 10 * 1024 * 1024:
+            return jsonify({'error': '音频文件不能超过 10 MB'}), 413
         
         from services.llm_client import SharedLLMClient
         client = SharedLLMClient()
@@ -1738,7 +1850,7 @@ def stt_transcribe():
                 )
                 raw_text = getattr(response, 'text', '') or getattr(response, 'transcript', '') or str(response)
                 
-        raw_text = raw_text.strip()
+        raw_text = str(raw_text or '').strip()[:20000]
         if not raw_text:
             return jsonify({'success': True, 'text': ''})
             
@@ -1761,19 +1873,18 @@ def stt_transcribe():
             messages, temperature=0.2, max_tokens=300, request_kind="stt"
         )
         if optimized_text:
-            optimized_text = optimized_text.strip()
+            optimized_text = str(optimized_text).strip()
             if optimized_text.startswith('"') and optimized_text.endswith('"'):
                 optimized_text = optimized_text[1:-1]
             elif optimized_text.startswith('“') and optimized_text.endswith('”'):
                 optimized_text = optimized_text[1:-1]
-            return jsonify({'success': True, 'text': optimized_text})
+            return jsonify({'success': True, 'text': optimized_text[:20000]})
             
         return jsonify({'success': True, 'text': raw_text})
         
-    except Exception as e:
-        print(f"音频识别失败: {e}")
-        traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
+    except Exception:
+        current_app.logger.exception('音频识别失败')
+        return jsonify({'error': '音频识别失败，请稍后重试'}), 500
     finally:
         # 清理临时文件
         if temp_path and os.path.exists(temp_path):
@@ -1789,10 +1900,13 @@ def stt_transcribe():
 
 @thinking.route('/api/stage3/chat', methods=['POST'])
 @login_required
+@student_required
 def stage3_teacher_chat():
     """费曼阶段 — 老师Agent对话"""
     try:
-        data = request.get_json() or {}
+        data = request.get_json(silent=True) or {}
+        if not isinstance(data, dict):
+            return jsonify({'error': '请求数据格式不正确'}), 400
         if wants_sse():
             return _stage3_stream_response(
                 lambda: _unwrap_stage3_error(
@@ -1812,10 +1926,13 @@ def stage3_teacher_chat():
 
 @thinking.route('/api/stage3/forum/message', methods=['POST'])
 @login_required
+@student_required
 def stage3_forum_message():
     """费曼阶段 — 论坛式显式目标对话"""
     try:
-        data = request.get_json() or {}
+        data = request.get_json(silent=True) or {}
+        if not isinstance(data, dict):
+            return jsonify({'error': '请求数据格式不正确'}), 400
         if wants_sse():
             def run_forum_turn():
                 _, _, payload = _run_stage3_forum_turn(
@@ -1840,15 +1957,21 @@ def stage3_forum_message():
 
 @thinking.route('/api/stage3/forum/trace', methods=['POST'])
 @login_required
+@student_required
 def stage3_forum_trace():
     """费曼阶段 — 本地开发者安全追踪"""
-    if not _request_is_local():
+    if not (
+        (current_app.debug or current_app.testing)
+        and _request_is_local()
+    ):
         return jsonify({
             'error': '非开发环境，拒绝访问该调试接口',
             'error_code': 'DEV_TRACE_DISABLED',
         }), 403
 
-    data = request.get_json() or {}
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({'error': '请求数据格式不正确'}), 400
     session_id = data.get('session_id')
     thinking_session = ThinkingSession.query.get(session_id)
     if not thinking_session or thinking_session.student_id != current_user.student_id:
@@ -1863,10 +1986,13 @@ def stage3_forum_trace():
 
 @thinking.route('/api/stage3/teach', methods=['POST'])
 @login_required
+@student_required
 def stage3_student_teach():
     """费曼阶段 — 教坏学生对话"""
     try:
-        data = request.get_json() or {}
+        data = request.get_json(silent=True) or {}
+        if not isinstance(data, dict):
+            return jsonify({'error': '请求数据格式不正确'}), 400
         if wants_sse():
             return _stage3_stream_response(
                 lambda: _unwrap_stage3_error(
@@ -1886,10 +2012,13 @@ def stage3_student_teach():
 
 @thinking.route('/api/stage3/write_code', methods=['POST'])
 @login_required
+@student_required
 def stage3_write_code():
     """费曼阶段 — 坏学生尝试写代码（带陷阱）"""
     try:
-        data = request.get_json() or {}
+        data = request.get_json(silent=True) or {}
+        if not isinstance(data, dict):
+            return jsonify({'error': '请求数据格式不正确'}), 400
         if wants_sse():
             def run_write_code():
                 ts, runtime, error_code = _stage3_runtime(data)
@@ -1934,27 +2063,33 @@ def stage3_write_code():
 
 @thinking.route('/api/stage3/fix_code', methods=['POST'])
 @login_required
+@student_required
 def stage3_fix_code():
     """费曼阶段 — 学生帮坏学生修复代码"""
     try:
-        data = request.get_json() or {}
+        data = request.get_json(silent=True) or {}
+        if not isinstance(data, dict):
+            return jsonify({'error': '请求数据格式不正确'}), 400
+        fixed_code = data.get('fixed_code', '')
+        if not isinstance(fixed_code, str):
+            return jsonify({'error': '修复后的代码格式不正确'}), 400
+        if len(fixed_code) > 200000:
+            return jsonify({'error': '代码不能超过 200000 个字符'}), 413
         if wants_sse():
             def run_fix_code():
-                fixed_code = data.get('fixed_code', '')
                 ts, runtime, error_code = _stage3_runtime(data)
                 if error_code:
                     return _unwrap_stage3_error(_stage3_runtime_error_response(error_code))
                 result = runtime.evaluate_fix(
-                    str(fixed_code or ''), request_id=_request_id(data)
+                    fixed_code, request_id=_request_id(data)
                 )
                 return _stage3_payload_with_goal(result.to_public_dict(), ts, runtime)
 
             return _stage3_stream_response(run_fix_code, '老师Agent正在验证你的修复...')
-        fixed_code = data.get('fixed_code', '')  # 修改后的代码或自然语言描述
         ts, runtime, error_code = _stage3_runtime(data)
         if error_code:
             return _stage3_runtime_error_response(error_code)
-        result = runtime.evaluate_fix(str(fixed_code or ''), request_id=_request_id(data))
+        result = runtime.evaluate_fix(fixed_code, request_id=_request_id(data))
         return jsonify(_stage3_payload_with_goal(result.to_public_dict(), ts, runtime))
     except Exception:
         db.session.rollback()
@@ -1964,16 +2099,25 @@ def stage3_fix_code():
 
 @thinking.route('/api/complete_session', methods=['POST'])
 @login_required
+@student_required
 def complete_session():
     """手动标记完成（用于阶段3判定通过后）"""
     try:
-        data = request.get_json() or {}
+        data = request.get_json(silent=True) or {}
+        if not isinstance(data, dict):
+            return jsonify({'error': '请求数据格式不正确'}), 400
         session_id = data.get('session_id')
-        total_time = data.get('total_time_seconds', 0)
+        total_time = max(
+            0,
+            min(86400, _safe_int(data.get('total_time_seconds'), 0)),
+        )
 
         ts = ThinkingSession.query.get(session_id)
         if not ts or ts.student_id != current_user.student_id:
             return jsonify({'error': '会话不存在'}), 403
+        assignment = Assignment.query.get(ts.assignment_id)
+        if not assignment or not can_access_assignment(assignment, current_user):
+            return jsonify({'error': '无权访问该作业'}), 403
         if not _stage3_completion_is_verified(ts):
             return jsonify({
                 'error': '阶段3尚未通过服务端完成校验',
@@ -1988,8 +2132,9 @@ def complete_session():
 
         return jsonify({'success': True})
 
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    except Exception:
+        current_app.logger.exception('完成学习会话失败')
+        return jsonify({'error': '完成学习会话失败，请稍后重试'}), 500
 
 
 # ============================================================
@@ -1998,16 +2143,25 @@ def complete_session():
 
 @thinking.route('/api/generate_preset', methods=['POST'])
 @login_required
+@teacher_required
 def api_generate_preset():
     """手动触发预设生成（用于测试或老师手动触发）"""
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
+        if not isinstance(data, dict):
+            return jsonify({'error': '请求数据格式不正确'}), 400
         assignment_id = data.get('assignment_id')
         reference_code = data.get('reference_code', '')
+        if not isinstance(assignment_id, int) or assignment_id <= 0:
+            return jsonify({'error': '作业ID格式不正确'}), 400
+        if not isinstance(reference_code, str) or len(reference_code) > 200000:
+            return jsonify({'error': '参考代码格式不正确或过长'}), 400
 
         assignment = Assignment.query.get(assignment_id)
         if not assignment:
             return jsonify({'error': '作业不存在'}), 404
+        if not can_manage_assignment(assignment, current_user):
+            return jsonify({'error': '无权重新生成该作业的学习数据'}), 403
         demo_assignment = _demo_guided_assignment(assignment_id)
 
         # 检查是否已有预设
@@ -2045,7 +2199,8 @@ def api_generate_preset():
                         preset_status_error = None
                     else:
                         active_preset.status = 'failed'
-                        active_preset.error_message = str(gen_err)
+                        current_app.logger.exception('预设生成失败 assignment_id=%s', assignment_id)
+                        active_preset.error_message = '生成失败，请稍后重试'
                         preset_status_error = active_preset.error_message
                 db.session.commit()
                 yield sse_event({
@@ -2075,7 +2230,8 @@ def api_generate_preset():
                 preset_status_error = None
             else:
                 preset.status = 'failed'
-                preset.error_message = str(gen_err)
+                current_app.logger.exception('预设生成失败 assignment_id=%s', assignment_id)
+                preset.error_message = '生成失败，请稍后重试'
                 preset_status_error = preset.error_message
         else:
             preset_status_error = preset.error_message
@@ -2088,17 +2244,23 @@ def api_generate_preset():
             'error': preset_status_error
         })
 
-    except Exception as e:
-        print(f"生成预设API失败: {e}")
-        traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
+    except Exception:
+        current_app.logger.exception('生成预设API失败')
+        db.session.rollback()
+        return jsonify({'error': '预设生成失败，请稍后重试'}), 500
 
 
 @thinking.route('/api/preset_status/<int:assignment_id>', methods=['GET'])
 @login_required
+@student_required
 def preset_status(assignment_id):
     """轮询预设状态"""
     try:
+        assignment = Assignment.query.get(assignment_id)
+        if not assignment:
+            return jsonify({'status': 'not_found'}), 404
+        if not can_access_assignment(assignment, current_user):
+            return jsonify({'error': '无权访问该作业'}), 403
         preset = AssignmentThinkingPreset.query.filter_by(assignment_id=assignment_id).first()
         preset = _check_and_trigger_stale_preset(preset, assignment_id)
         if not preset:
@@ -2106,10 +2268,15 @@ def preset_status(assignment_id):
             
         return jsonify({
             'status': preset.status,
-            'error': preset.error_message
+            'error': (
+                '生成失败，请联系教师重试'
+                if preset.status == 'failed'
+                else None
+            )
         })
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        current_app.logger.exception('查询学习预设状态失败 assignment_id=%s', assignment_id)
+        return jsonify({'error': '查询预设状态失败，请稍后重试'}), 500
 
 
 @thinking.route('/api/retry_preset/<int:assignment_id>', methods=['POST'])
@@ -2119,9 +2286,21 @@ def retry_preset(assignment_id):
     try:
         demo_assignment = _demo_guided_assignment(assignment_id)
         if demo_assignment:
+            if (
+                not current_user.is_authenticated
+                or current_user.usertype != '学生'
+                or not getattr(current_user, 'is_demo', False)
+            ):
+                return jsonify({'error': '无权重置演示预设'}), 403
             preset = ensure_demo_guided_preset(demo_assignment)
             db.session.commit()
             return jsonify({'success': True, 'status': 'ready', 'demo': True})
+
+        assignment = Assignment.query.get(assignment_id)
+        if not assignment:
+            return jsonify({'error': '作业不存在'}), 404
+        if not can_manage_assignment(assignment, current_user):
+            return jsonify({'error': '仅作业负责教师可以重新生成学习数据'}), 403
 
         preset = AssignmentThinkingPreset.query.filter_by(assignment_id=assignment_id).first()
         if not preset:
@@ -2137,13 +2316,28 @@ def retry_preset(assignment_id):
         add_generate_preset_task(assignment_id)
         
         return jsonify({'success': True})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    except Exception:
+        current_app.logger.exception('重试学习预设失败 assignment_id=%s', assignment_id)
+        db.session.rollback()
+        return jsonify({'error': '重试预设失败，请稍后重试'}), 500
 
 
 # ============================================================
 # API: 老师查看学习日志
 # ============================================================
+
+@thinking.route('/api/session/<int:session_id>/status')
+@login_required
+def get_session_status(session_id):
+    """Return a safe lifecycle projection for the student or an authorized teacher."""
+    thinking_session = db.session.get(ThinkingSession, session_id)
+    if not thinking_session or not can_view_session(current_user, thinking_session):
+        # Keep missing and unauthorized sessions on the same response path so
+        # this new endpoint does not reveal that a session id exists.
+        return jsonify({'error': '会话不存在或无权访问'}), 403
+
+    lifecycle = session_lifecycle_payload(thinking_session)
+    return jsonify({'success': True, 'session': lifecycle})
 
 @thinking.route('/api/session/<int:session_id>/log')
 @login_required
@@ -2152,9 +2346,7 @@ def get_session_log(session_id):
     try:
         ts = ThinkingSession.query.get_or_404(session_id)
 
-        # 权限检查：管理员、老师、或学生本人可查看
-        if not (current_user.is_admin or current_user.is_teacher or
-                current_user.student_id == ts.student_id):
+        if not can_access_thinking_session(ts, current_user):
             return jsonify({'error': '无权查看'}), 403
 
         logs = ThinkingStageLog.query.filter_by(session_id=session_id)\
@@ -2177,24 +2369,107 @@ def get_session_log(session_id):
             } for log in logs]
         })
 
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    except Exception:
+        current_app.logger.exception('读取学习会话日志失败 session_id=%s', session_id)
+        return jsonify({'error': '读取学习日志失败，请稍后重试'}), 500
 
 
 @thinking.route('/api/assignment/<int:assignment_id>/sessions')
 @login_required
 def get_assignment_sessions(assignment_id):
     """获取某作业的所有学习会话（老师用）"""
-    if not (current_user.is_admin or current_user.is_teacher):
+    assignment = Assignment.query.get_or_404(assignment_id)
+    if not current_user.is_admin and not current_user.is_teacher:
+        return jsonify({'error': '无权查看'}), 403
+    if not can_access_assignment(assignment, current_user):
         return jsonify({'error': '无权查看'}), 403
 
     sessions = ThinkingSession.query.filter_by(assignment_id=assignment_id)\
         .order_by(ThinkingSession.started_at.desc()).all()
+    activity_by_session = latest_session_activity([item.id for item in sessions])
+    lifecycle_filter = str(request.args.get('lifecycle_status') or '').strip().lower()
+    if lifecycle_filter not in LIFECYCLE_STATUSES:
+        lifecycle_filter = None
+
+    summaries = []
+    for item in sessions:
+        lifecycle = session_lifecycle_payload(
+            item,
+            last_activity_at=activity_by_session.get(item.id),
+        )
+        if lifecycle_filter and lifecycle['status'] != lifecycle_filter:
+            continue
+        summary = item.to_summary_dict()
+        summary.update({
+            'lifecycle_status': lifecycle['status'],
+            'progress_percent': lifecycle['progress_percent'],
+            'stage_label': lifecycle['stage_label'],
+            'next_action': lifecycle['next_action'],
+            'last_activity_at': lifecycle['last_activity_at'],
+            'elapsed_seconds': lifecycle['elapsed_seconds'],
+            'elapsed_source': lifecycle['elapsed_source'],
+            'lifecycle': lifecycle,
+        })
+        summaries.append(summary)
 
     return jsonify({
         'success': True,
-        'sessions': [s.to_summary_dict() for s in sessions]
+        'sessions': summaries,
     })
+
+
+@thinking.route('/assignment/<int:assignment_id>/sessions/view')
+@login_required
+def assignment_sessions_view(assignment_id):
+    """Read-only teacher view of the session lifecycle projection."""
+    if not (current_user.is_admin or current_user.is_teacher):
+        flash_message = '您没有权限访问此页面'
+        # Keep this page consistent with the other teacher-only dashboard
+        # pages without changing the existing JSON endpoint's behavior.
+        from flask import redirect, url_for, flash
+        flash(flash_message, 'danger')
+        return redirect(url_for('main.home'))
+
+    assignment = Assignment.query.get_or_404(assignment_id)
+    if not can_view_assignment(current_user, assignment):
+        abort(403)
+    sessions = ThinkingSession.query.filter_by(assignment_id=assignment_id).options(
+        joinedload(ThinkingSession.student),
+        joinedload(ThinkingSession.assignment),
+    ).order_by(ThinkingSession.started_at.desc()).all()
+    activity_by_session = latest_session_activity([item.id for item in sessions])
+    lifecycle_filter = str(request.args.get('lifecycle_status') or '').strip().lower()
+    if lifecycle_filter not in LIFECYCLE_STATUSES:
+        lifecycle_filter = None
+
+    rows = []
+    for item in sessions:
+        if not can_view_session(current_user, item):
+            continue
+        lifecycle = session_lifecycle_payload(
+            item,
+            last_activity_at=activity_by_session.get(item.id),
+        )
+        if lifecycle_filter and lifecycle['status'] != lifecycle_filter:
+            continue
+        student = item.student
+        rows.append({
+            'student_name': (
+                getattr(student, 'full_name', None)
+                or getattr(student, 'username', None)
+                or item.student_id
+            ),
+            'student_id': item.student_id,
+            'lifecycle': lifecycle,
+        })
+
+    return render_template(
+        'thinking/session_overview.html',
+        assignment=assignment,
+        sessions=rows,
+        lifecycle_filter=lifecycle_filter,
+        lifecycle_statuses=LIFECYCLE_STATUSES,
+    )
 
 
 # ============================================================
@@ -2216,7 +2491,7 @@ def _log_event(session_id: int, stage: int, event_type: str,
 
 
 def _serialize_preset(preset: AssignmentThinkingPreset) -> dict:
-    """序列化预设数据（供前端使用，不暴露标准答案）"""
+    """序列化学生可见的预设数据，不把判题答案下发到浏览器。"""
     if not preset:
         return {}
 
@@ -2317,48 +2592,62 @@ def _serialize_preset(preset: AssignmentThinkingPreset) -> dict:
     for part in parts_list:
         random.shuffle(part['blocks'])
 
-    # 惰性回填：如果旧预设缺少 algorithm_summary，尝试后台异步生成，避免阻塞主请求
+    # 只读取已有的算法简述。学生加载页面不能借此创建线程、写数据库或
+    # 触发隐藏的 AI 请求；教师的明确生成入口负责维护旧预设。
     algorithm_summary = preset.get_algorithm_summary()
-    demo_run_id = current_demo_run_id()
-    is_demo_preset = (
-        demo_run_id
-        and getattr(current_user, 'is_demo', False)
-        and is_demo_guided_assignment(preset.assignment)
-    )
-    if is_demo_preset and not algorithm_summary:
-        repaired = ensure_demo_guided_preset(preset.assignment)
-        if repaired:
-            db.session.commit()
-            algorithm_summary = repaired.get_algorithm_summary()
-    elif not algorithm_summary and preset.status == 'ready' and preset.reference_code:
-        import threading
-        app = current_app._get_current_object()
-        preset_id = preset.id
-        
-        def run_backfill():
-            with app.app_context():
-                try:
-                    from models import AssignmentThinkingPreset
-                    p = AssignmentThinkingPreset.query.get(preset_id)
-                    if p:
-                        _lazy_backfill_summary(p)
-                except Exception as ex:
-                    app.logger.warning(f"后台惰性回填算法简述失败: {ex}")
-                    
-        threading.Thread(target=run_backfill, daemon=True).start()
 
     difficulty = preset.get_difficulty_config() or {}
-    guided_questions = difficulty.get('guided_questions', [])
+    guided_questions = [
+        str(question)[:500]
+        for question in difficulty.get('guided_questions', [])
+        if isinstance(question, str) and question.strip()
+    ][:10]
 
-    # 获取逐步选择/填空题数据
-    quiz_steps = preset.get_quiz_steps()
+    public_difficulty = {
+        'feynman_rounds': _safe_int(difficulty.get('feynman_rounds'), 3),
+        'student_persona': str(difficulty.get('student_persona') or 'curious')[:40],
+        'code_complexity': _safe_int(difficulty.get('code_complexity'), 0),
+        'guided_questions': guided_questions,
+    }
+
+    # 正确答案、答案解释和完整正确代码行只留在服务端用于判题。
+    # 之前直接返回 get_quiz_steps()，学生可在 DevTools 中读取答案并秒过。
+    quiz_steps = []
+    for raw_step in preset.get_quiz_steps():
+        if not isinstance(raw_step, dict):
+            continue
+        step_type = str(raw_step.get('type') or '').strip()
+        if step_type not in {'choice', 'fill', 'fill_blank'}:
+            continue
+        step_id = raw_step.get('step_id')
+        if step_id is None:
+            continue
+        public_step = {
+            'step_id': str(step_id),
+            'type': step_type,
+            'question': str(raw_step.get('question') or '')[:1000],
+            'part_name': str(raw_step.get('part_name') or '核心程序')[:100],
+            'indent': max(0, min(3, _safe_int(raw_step.get('indent'), 0))),
+        }
+        if step_type == 'choice':
+            public_step['options'] = [
+                str(option)[:500]
+                for option in (raw_step.get('options') or [])
+                if isinstance(option, str)
+            ][:8]
+        else:
+            for field in ('context_before', 'context_after', 'blank_hint'):
+                public_step[field] = str(raw_step.get(field) or '')[:1000]
+        for field in ('part_header', 'part_footer'):
+            public_step[field] = str(raw_step.get(field) or '')[:2000]
+        quiz_steps.append(public_step)
 
     return {
         'key_steps': preset.get_key_steps(),
         'blocks': all_blocks,
         'parts': parts_list,
         'quiz_steps': quiz_steps,
-        'difficulty': difficulty,
+        'difficulty': public_difficulty,
         'algorithm_summary': algorithm_summary,
         'guided_questions': guided_questions,
         'status': preset.status
@@ -2414,9 +2703,8 @@ def debug_jump_stage():
         if not ts or ts.student_id != current_user.student_id:
             return jsonify({'error': '会话不存在'}), 403
 
-        is_local = request.host.startswith('localhost') or request.host.startswith('127.0.0.1')
         demo_allowed = is_demo_guided_session(ts)
-        if not (current_app.debug or is_local or demo_allowed):
+        if not (current_app.debug or demo_allowed):
             return jsonify({'error': '非开发环境，拒绝访问该调试接口'}), 403
 
         if target_stage == 1:
@@ -2461,6 +2749,7 @@ def debug_jump_stage():
 
         db.session.commit()
         return jsonify({'success': True, 'current_stage': ts.current_stage, 'status': ts.status})
-    except Exception as e:
+    except Exception:
         db.session.rollback()
-        return jsonify({'error': str(e)}), 500
+        current_app.logger.exception('调试阶段跳转失败')
+        return jsonify({'error': '调试操作失败，请稍后重试'}), 500

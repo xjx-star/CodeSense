@@ -35,6 +35,7 @@
 
                     <!-- 文件上传表单 -->
                     <form action="{{ url_for('classes.import_classes') }}" method="POST" enctype="multipart/form-data">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                         <div class="mb-4">
                             <label for="class_file" class="form-label fw-bold">选择班级导入文件</label>
                             <input class="form-control" type="file" id="class_file" name="class_file" accept=".xlsx,.xls,.csv" required>

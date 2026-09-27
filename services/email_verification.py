@@ -121,9 +121,21 @@ def consume_email_verification_token(raw_token):
         return None
 
     now = datetime.utcnow()
+    # ``with_for_update`` does not provide a lock on SQLite.  Make the
+    # one-time claim conditional so two concurrent verification requests
+    # cannot both consume the same token.
+    claimed = EmailVerificationToken.query.filter(
+        EmailVerificationToken.id == record.id,
+        EmailVerificationToken.used_at.is_(None),
+        EmailVerificationToken.revoked_at.is_(None),
+        EmailVerificationToken.expires_at > now,
+    ).update({'used_at': now}, synchronize_session=False)
+    if claimed != 1:
+        db.session.rollback()
+        return None
+
     user.email_verified_at = now
     user.email_verification_required = False
-    record.used_at = now
     EmailVerificationToken.query.filter(
         EmailVerificationToken.user_id == user.student_id,
         EmailVerificationToken.id != record.id,

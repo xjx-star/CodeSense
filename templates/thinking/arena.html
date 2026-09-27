@@ -52,10 +52,33 @@
         </div>
     </div>
 
+    <!-- ========== Session lifecycle / recovery status ========== -->
+    <section class="session-lifecycle" id="session-lifecycle" data-session-status="unknown"
+             aria-labelledby="session-lifecycle-title">
+        <div class="session-lifecycle-copy">
+            <div class="session-lifecycle-heading">
+                <span class="session-lifecycle-kicker" id="session-lifecycle-title">学习会话状态</span>
+                <span class="session-lifecycle-badge" id="session-lifecycle-status" role="status" aria-live="polite">等待同步</span>
+            </div>
+            <p class="session-lifecycle-meta" id="session-lifecycle-meta">进入学习后将从服务器同步最近活动和阶段进度。</p>
+            <p class="session-lifecycle-next" id="session-next-action">下一步：保持当前页面，开始第一阶段。</p>
+        </div>
+        <div class="session-lifecycle-actions">
+            <div class="session-lifecycle-progress" aria-hidden="true">
+                <div class="session-lifecycle-progress-bar" id="session-lifecycle-progress"></div>
+            </div>
+            <button type="button" class="arena-btn arena-btn-outline" id="session-status-refresh">
+                <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>同步状态
+            </button>
+            <span class="session-lifecycle-feedback" id="session-status-feedback" role="status" aria-live="polite"></span>
+        </div>
+        <p class="session-lifecycle-note">状态来自服务器；切换标签页不会丢失进度。时间显示为服务器观察时间或历史保存计时。</p>
+    </section>
+
     <!-- ========== Problem Description ========== -->
     <div class="problem-panel no-select" oncopy="return false;" oncut="return false;" oncontextmenu="return false;">
         <h2><i class="bi bi-file-earmark-text"></i> {{ assignment.title }}</h2>
-        <div class="problem-description" data-markdown="{{ assignment.description or '' }}">
+        <div class="problem-description cs-markdown" data-markdown="{{ assignment.description or '' }}">
             {{ assignment.description or '暂无描述' }}
         </div>
     </div>
@@ -70,10 +93,12 @@
         {% elif preset_status == 'failed' %}
         <i class="bi bi-exclamation-triangle" style="animation: none; color: var(--arena-danger);"></i>
         <h3>学习数据生成失败</h3>
-        <p>可能由于大模型连接超时，请尝试重新生成或联系老师。</p>
+        <p>可能由于大模型连接超时，请联系作业负责教师重新生成。</p>
+        {% if is_demo_experience %}
         <button class="arena-btn arena-btn-primary" style="margin-top: 16px;" onclick="retryGeneratePreset()">
             <i class="bi bi-arrow-clockwise"></i> 重新尝试生成
         </button>
+        {% endif %}
         {% else %}
         <i class="bi bi-hourglass-split"></i>
         <h3>学习数据尚未准备</h3>
@@ -274,7 +299,7 @@
                     <div class="chat-messages no-select" id="companion-messages" oncopy="return false;" oncut="return false;" oncontextmenu="return false;">
                         <div class="chat-message">
                             <div class="chat-avatar teacher">🤖</div>
-                            <div class="chat-bubble ai">我是你的 AI 伴学助手。在思路描述和积木编程阶段，如果你遇到问题，随时可以在下方问我，我会引导你思考！</div>
+                            <div class="chat-bubble ai cs-markdown" data-markdown="我是你的 AI 伴学助手。在思路描述和积木编程阶段，如果你遇到问题，随时可以在下方问我，我会引导你思考！">我是你的 AI 伴学助手。在思路描述和积木编程阶段，如果你遇到问题，随时可以在下方问我，我会引导你思考！</div>
                         </div>
                     </div>
                     <div class="chat-input-area">

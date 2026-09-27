@@ -1,13 +1,12 @@
 from datetime import datetime as dt, time, timedelta
 
 from models import Assignment, Class, StudentRoster, Submission, User, db
+from sqlalchemy import or_
+from utils.access import assignment_target_class_filter, class_student_filter
+from utils.scoring import EXCELLENT_SCORE_THRESHOLD, LOW_SCORE_THRESHOLD
 
 
 ACTIVE_WINDOW_DAYS = 7
-LOW_SCORE_THRESHOLD = 3.0
-EXCELLENT_SCORE_THRESHOLD = 4.0
-
-
 def _student_ids(students):
     return [student.student_id for student in students]
 
@@ -41,13 +40,10 @@ def _submission_counts_by_student(student_ids):
 
 def _assigned_assignments_for_class(cls, limit=None):
     query = Assignment.query.filter(
-        Assignment.target_classes.contains(cls.name)
+        assignment_target_class_filter(cls.name)
     ).order_by(Assignment.created_time.desc())
     assignments = query.limit(limit).all() if limit else query.all()
-    return [
-        assignment for assignment in assignments
-        if cls.name in assignment.get_target_class_list()
-    ]
+    return assignments
 
 
 def _latest_assignment_for_class(cls):
@@ -113,9 +109,10 @@ def _cell_status(best_score, submitted):
 def build_assignment_completion_matrix(cls, students=None, assignment_limit=5):
     """Build a recent-assignment completion matrix for a class."""
     if students is None:
-        students = cls.students.filter_by(usertype='学生')\
-            .order_by(User.user_ascore.desc())\
-            .all()
+        students = User.query.filter(
+            class_student_filter(cls),
+            User.usertype == '学生',
+        ).order_by(User.user_ascore.desc()).all()
     else:
         students = list(students)
 
@@ -226,9 +223,10 @@ def build_class_learning_rows(cls, students=None, now=None):
     """Build per-student learning status rows for a class."""
     now = now or dt.utcnow()
     if students is None:
-        students = cls.students.filter_by(usertype='学生')\
-            .order_by(User.user_ascore.desc())\
-            .all()
+        students = User.query.filter(
+            class_student_filter(cls),
+            User.usertype == '学生',
+        ).order_by(User.user_ascore.desc()).all()
     else:
         students = list(students)
 
@@ -259,13 +257,11 @@ def build_teacher_dashboard_data(teacher, now=None):
     managed_classes = teacher.managed_classes.all()
     class_ids = [cls.id for cls in managed_classes]
 
-    if class_ids:
-        students = User.query.filter(
-            User.usertype == '学生',
-            User.class_id.in_(class_ids),
-        ).all()
-    else:
-        students = []
+    class_filters = [class_student_filter(cls) for cls in managed_classes]
+    students = User.query.filter(
+        User.usertype == '学生',
+        or_(*class_filters),
+    ).all() if class_filters else []
 
     student_ids = _student_ids(students)
     recent_submissions = Submission.query.filter(
@@ -300,7 +296,10 @@ def build_teacher_dashboard_data(teacher, now=None):
 
     class_cards = []
     for cls in managed_classes:
-        class_students = cls.students.filter_by(usertype='学生').all()
+        class_students = User.query.filter(
+            class_student_filter(cls),
+            User.usertype == '学生',
+        ).all()
         class_rows = build_class_learning_rows(cls, students=class_students, now=now)
         latest_assignment = _latest_assignment_for_class(cls)
         completed, total, completion_rate = _assignment_completion(

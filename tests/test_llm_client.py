@@ -239,6 +239,16 @@ def test_stream_retries_before_first_token(monkeypatch):
     assert len(fake.completions.calls) == 2
 
 
+def test_stream_reports_network_diagnostic_after_all_providers_fail(monkeypatch):
+    fake = FakeProviderClient([ConnectionError("connection error")] * 3)
+    client = make_client({LLMProvider.ZHIPU: fake})
+    monkeypatch.setattr(llm_module.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(LLMServiceError) as exc_info:
+        list(client.chat_stream([{"role": "user", "content": "诊断测试"}]))
+
+    assert exc_info.value.code == "NETWORK_UNAVAILABLE"
+    assert len(fake.completions.calls) == 3
 def test_stream_can_use_a_single_attempt_for_interactive_timeout():
     fake = FakeProviderClient([TimeoutError("timed out")])
     client = make_client({LLMProvider.ZHIPU: fake})

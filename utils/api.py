@@ -8,6 +8,8 @@ from typing import Any, Optional, Union
 from enum import Enum
 import json
 
+from utils.access import authoritative_class_name
+
 
 class ResponseStatus(Enum):
     """响应状态枚举"""
@@ -227,7 +229,7 @@ def user_to_dict(user):
         'student_id': user.student_id,
         'username': user.username,
         'full_name': user.full_name,
-        'class_name': user.class_name,
+        'class_name': authoritative_class_name(user),
         'usertype': user.usertype,
         'submit_count': user.submit_count,
         'user_ascore': user.user_ascore
@@ -257,4 +259,4 @@ def submission_to_dict(submission):
         'feedback': submission.feedback,
         'ai_feedback': submission.ai_feedback,
         'submitted_at': submission.submitted_at.isoformat() if submission.submitted_at else None
-    } 
+    }

@@ -29,25 +29,6 @@ class PasswordResetRequestForm(FlaskForm):
     submit = SubmitField('发送重置链接')
 
 
-class EmailVerificationRequestForm(FlaskForm):
-    """重新发送注册邮箱验证邮件的表单。"""
-    email = StringField(
-        '注册邮箱',
-        validators=[
-            DataRequired(message='请输入注册邮箱'),
-            Email(message='邮箱格式不正确'),
-            Length(3, 120),
-        ],
-    )
-    submit = SubmitField('重新发送验证邮件')
-
-
-class EmailVerificationForm(FlaskForm):
-    """确认邮箱验证令牌的表单。"""
-    token = HiddenField('邮箱验证令牌', validators=[DataRequired()])
-    submit = SubmitField('验证邮箱')
-
-
 class ResetPasswordForm(FlaskForm):
     """使用一次性令牌设置新密码的表单。"""
     token = HiddenField('重置令牌', validators=[DataRequired()])
@@ -76,7 +57,8 @@ class AdminPasswordResetForm(FlaskForm):
 class RegistrationForm(FlaskForm):
     """注册表单"""
     username = StringField('用户名', validators=[DataRequired(message='用户名不能为空'), Length(1, 50)])
-    student_id = StringField('学号', validators=[DataRequired(message='学号不能为空'), Length(1, 20)])
+    # 学号对教学班学生是必需的，但自由用户可以先注册，再凭教师加入码入班。
+    student_id = StringField('学号/教师工号', validators=[Optional(), Length(0, 20)])
     password = PasswordField('密码', validators=[DataRequired(message='密码不能为空'), Length(6, 20)])
     confirm_password = PasswordField('确认密码', validators=[
         DataRequired(message='确认密码不能为空'), 
@@ -125,19 +107,50 @@ class EmailRegistrationForm(FlaskForm):
     submit = SubmitField('注册并验证邮箱')
 
 
+class EmailVerificationRequestForm(FlaskForm):
+    """重新发送注册邮箱验证邮件的表单。"""
+    email = StringField(
+        '注册邮箱',
+        validators=[
+            DataRequired(message='请输入注册邮箱'),
+            Email(message='邮箱格式不正确'),
+            Length(3, 120),
+        ],
+    )
+    submit = SubmitField('重新发送验证邮件')
+
+
+class EmailVerificationForm(FlaskForm):
+    """确认邮箱验证令牌的表单。"""
+    token = HiddenField('邮箱验证令牌', validators=[DataRequired()])
+    submit = SubmitField('验证邮箱')
+
+
 class AssignmentForm(FlaskForm):
     """作业表单"""
     assignment_id = IntegerField('作业ID', validators=[DataRequired(message='作业ID不能为空'), 
                                                NumberRange(min=1, message='作业ID必须为正整数')])
     title = StringField('标题', validators=[DataRequired(message='标题不能为空'), Length(1, 100)])
-    description = TextAreaField('描述', validators=[DataRequired(message='描述不能为空')])
+    description = TextAreaField(
+        '描述',
+        validators=[
+            DataRequired(message='描述不能为空'),
+            Length(max=20000, message='描述不能超过 20000 个字符'),
+        ],
+    )
     due_date = DateTimeLocalField('截止日期', format='%Y-%m-%dT%H:%M', validators=[Optional()])
     submit = SubmitField('提交')
 
 
 class SubmissionForm(FlaskForm):
     """代码提交表单"""
-    code = TextAreaField('代码', validators=[DataRequired(message='代码不能为空')])
+    code = TextAreaField(
+        '代码',
+        validators=[
+            DataRequired(message='代码不能为空'),
+            Length(max=200000, message='代码不能超过 200000 个字符'),
+        ],
+    )
     language = HiddenField('编程语言', default='cpp')
     submit = SubmitField('提交')
 
@@ -148,6 +161,16 @@ class EditProfileForm(FlaskForm):
     full_name = StringField('姓名', validators=[DataRequired(message='姓名不能为空'), Length(1, 50)])
     email = StringField('邮箱', validators=[Optional(), Email(message='邮箱格式不正确'), Length(0, 120)])
     class_name = SelectField('班级', validators=[Optional()])
+    bio = TextAreaField('个人简介', validators=[Optional(), Length(max=300, message='个人简介不能超过 300 个字符')])
+    profile_visibility = SelectField(
+        '公开范围',
+        choices=[
+            ('private', '仅自己和有权限的教学人员可见'),
+            ('public', '允许通过公开链接查看基础资料'),
+        ],
+        validators=[Optional()],
+        default='private',
+    )
     avatar = FileField('头像', validators=[Optional(), FileAllowed(['jpg', 'jpeg', 'png', 'gif', 'webp'], '仅支持 jpg、jpeg、png、gif、webp 格式')])
     submit = SubmitField('保存修改')
 

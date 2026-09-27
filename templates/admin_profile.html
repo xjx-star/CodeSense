@@ -341,7 +341,7 @@
                     <div class="col-md-4">
                         <div class="stats-small-card position-relative">
                             <div class="stats-value">{{ average_score|round(1) }}</div>
-                            <div class="stats-label">平均分数</div>
+                            <div class="stats-label">平均分数（0–100）</div>
                             <i class="bi bi-star stats-icon"></i>
                         </div>
                     </div>
@@ -389,7 +389,7 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="https://cdn.jsdelivr.net/npm/chart.js@3.7.1/dist/chart.min.js"></script>
+<script src="{{ url_for('static', filename='vendor/chart.js/3.9.1/chart.min.js') }}?v=3.9.1"></script>
 <script>
     document.addEventListener('DOMContentLoaded', function() {
         // 系统状态图表
@@ -398,11 +398,11 @@
             new Chart(statusCtx, {
                 type: 'line',
                 data: {
-                    labels: {{ chart_dates|safe }},
+                    labels: {{ chart_dates|tojson }},
                     datasets: [
                         {
                             label: '登录次数',
-                            data: {{ login_counts|safe }},
+                            data: {{ login_counts|tojson }},
                             backgroundColor: 'rgba(54, 162, 235, 0.2)',
                             borderColor: 'rgba(54, 162, 235, 1)',
                             borderWidth: 2,
@@ -411,7 +411,7 @@
                         },
                         {
                             label: '提交次数',
-                            data: {{ submission_counts|safe }},
+                            data: {{ submission_counts|tojson }},
                             backgroundColor: 'rgba(255, 99, 132, 0.2)',
                             borderColor: 'rgba(255, 99, 132, 1)',
                             borderWidth: 2,

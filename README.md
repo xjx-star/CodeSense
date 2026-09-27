@@ -21,14 +21,14 @@
   <a href="https://github.com/XiaoCow666/CodeSense/stargazers"><img src="https://img.shields.io/github/stars/XiaoCow666/CodeSense?style=flat-square&logo=github" alt="GitHub stars"></a>
   <a href="https://github.com/XiaoCow666/CodeSense/network/members"><img src="https://img.shields.io/github/forks/XiaoCow666/CodeSense?style=flat-square&logo=github" alt="GitHub forks"></a>
   <a href="https://github.com/XiaoCow666/CodeSense/blob/main/LICENSE"><img src="https://img.shields.io/github/license/XiaoCow666/CodeSense?style=flat-square" alt="License"></a>
-  <img src="https://img.shields.io/badge/version-v1.0.0-2563eb?style=flat-square" alt="v1.0.0">
-  <img src="https://img.shields.io/badge/Python-3.8--3.13-3776ab?style=flat-square&logo=python&logoColor=white" alt="Python 3.8–3.13">
-  <img src="https://img.shields.io/badge/Flask-2.2.3-000000?style=flat-square&logo=flask&logoColor=white" alt="Flask 2.2.3">
+  <img src="https://img.shields.io/badge/version-v1.9.0-2563eb?style=flat-square" alt="v1.9.0">
+  <img src="https://img.shields.io/badge/Python-3.8--3.14-3776ab?style=flat-square&logo=python&logoColor=white" alt="Python 3.8–3.14">
+  <img src="https://img.shields.io/badge/Flask-2.3.3-000000?style=flat-square&logo=flask&logoColor=white" alt="Flask 2.3.3">
 </p>
 
-> 当前版本：<a href="https://github.com/XiaoCow666/CodeSense/releases/tag/v1.0.0"><code>v1.0.0</code></a>。
+> 当前版本：<a href="https://github.com/XiaoCow666/CodeSense/releases/tag/v1.9.0"><code>v1.9.0</code></a>。
 >
-> 这是 CodeSense Standard Edition 的首个正式版本。后续版本会同时更新 [CHANGELOG.md](CHANGELOG.md)、Git tag 和 GitHub Release。
+> 这是 CodeSense Standard Edition 的当前正式版本。发布级变更会记录在 [CHANGELOG.md](CHANGELOG.md)、Git tag 和 GitHub Release 中。
 
 ## 目录
 
@@ -68,6 +68,38 @@
     </td>
   </tr>
 </table>
+
+<p align="center">
+  <img src="docs/assets/codesense-v1.2.0-action-center-clear.png" alt="CodeSense v1.2.0 角色化行动中心清晰手绘信息图" width="100%">
+</p>
+
+<p align="center">
+  <img src="docs/assets/codesense-v1.3.0-knowledge-evidence.png" alt="CodeSense v1.3.0 作业知识证据工作区信息图" width="100%">
+</p>
+
+<p align="center">
+  <img src="docs/assets/codesense-v1.4.0-rag-quality-loop.png" alt="CodeSense v1.4.0 RAG 证据恢复与质量闭环信息图" width="100%">
+</p>
+
+<p align="center">
+  <img src="docs/assets/codesense-v1.5.0-student-learning-memory.png" alt="CodeSense v1.5.0 学生学习记忆与知识路径信息图" width="100%">
+</p>
+
+<p align="center">
+  <img src="docs/assets/codesense-v1.6.0-knowledge-intervention.png" alt="CodeSense v1.6.0 知识点干预与学习记忆治理信息图" width="100%">
+</p>
+
+<p align="center">
+  <img src="docs/assets/codesense-v1.7.0-knowledge-retrieval.png" alt="CodeSense v1.7.0 知识图谱与学生学习记忆闭环信息图" width="100%">
+</p>
+
+<p align="center">
+  <img src="docs/assets/codesense-v1.8.0-learning-memory-recovery.png" alt="CodeSense v1.8.0 学习记忆恢复与教学闭环信息图" width="100%">
+</p>
+
+<p align="center">
+  <img src="docs/assets/codesense-v1.9.0-teacher-student-learning-actions.png" alt="CodeSense v1.9.0 教师教学动作与学生学习记忆信息图" width="100%">
+</p>
 
 ## 为什么做这个项目
 
@@ -116,6 +148,36 @@ CodeSense 把代码提交、受限执行、AI 辅导、分阶段练习和学情�
 
 作业提交得分与能力画像不是同一个指标：前者当前按 0–5 分记录，后者按 0–100 分记录。
 
+### 学习记忆与知识路径
+
+v1.8.0 让学生学习记忆在更新失败时继续保留上一版可用记录，并提供有限次重试、过期来源治理和状态提示。学生提交评测后会沿用同一条更新路径，AI 辅导的 JSON/SSE 完成响应会说明来源、索引状态和作用域。
+
+教师首页增加班级学习记录索引汇总，只展示管理班级的人数与状态数量，并连接到已有的班级知识覆盖。学生撤回或过期的来源继续排除查询，教师页面不会展示学生私有来源内容。
+
+v1.9.0 把班级知识覆盖和学习记忆状态连接成教师可执行动作。教师可以直接创建针对性练习，也可以提醒需要更新学习记忆的学生；学生会在行动中心看到提醒，并回到自己的个人学习记忆入口。图谱关系保留作业来源和版本，教师只看管理班级的汇总信息；学生撤回的个人来源不会进入辅导检索。
+
+v1.7.0 把知识图谱和学生学习记忆接入学生辅导与教师干预流程。学生提问和 Code Studio 的完成响应会返回带有作用域、来源引用和来源版本的图谱投影；没有图谱数据时会明确显示无结果状态，个人记录只在当前学生范围内使用。
+
+教师知识点提醒展示班级聚合掌握度、样本数和需要加强的人数，并可直接创建预先关联知识点、预先选择班级的练习作业，创建后进入已有班级布置流程。学生向量检索先在数据库中执行学生与作业范围过滤，再计算相似度；离线评测同时记录召回、作用域过滤和查询延迟指标。
+
+v1.6.0 在学生首页提供来源治理。学生可以查看学习记忆的来源类型、版本和状态，撤回单条来源，并在索引陈旧或重建失败时看到明确的更新入口。索引只读取当前学生的数据，来源内容经过隐私过滤，撤回后不会继续参与检索。
+
+学生在提问或 Code Studio 中请求代码辅导时，AI 会结合当前作业范围内的个人学习记录和作业知识图谱，回答末尾显示来源、作用域和索引版本，帮助学生回看自己的学习过程。学习记忆与图谱用于引导反思和复习，分数仍由评测流程与教师判断决定。
+
+学生首页的知识路径展示作业、知识点和本人掌握度之间的关系；教师首页的知识点提醒可以直接进入针对性练习，AI 教学建议可以查看作业并布置到所属班级。每条图谱关系都带有来源引用和版本指纹，教师视图不会显示单个学生的私有学习来源。
+
+### 学习会话连续性与状态可视化
+
+CodeSense 会把引导式学习过程投影为可解释的会话状态：学生离开或刷新页面后，可以从“继续学习”入口回到最近会话，并看到当前阶段、下一步动作和可恢复提示；教师可以在授权范围内查看会话概览、阶段进度，并按“进行中、空闲、已完成、已放弃”筛选。状态接口只读已有学习记录，不改写历史数据，也会明确区分服务器观察时间、已存客户端计时和时间戳来源。
+
+### 作业知识证据工作区
+
+作业详情、提交详情和 Code Studio 会围绕当前作业展示知识焦点与有界证据：学生先看到需要掌握的概念、证据摘要和具体下一步；教师和管理员可以查看知识覆盖与降级状态；AI 代码建议在回答完成时附带可展开的证据收据。检索严格限定在当前作业和当前用户可访问的范围内；没有匹配证据时会明确提示仍可继续提问，知识证据只用于学习参考，不是作业评分依据。
+
+### 角色化行动中心
+
+v1.2.0 增加统一的行动中心，把学生的继续学习、评测与复核提示，教师的待复核与学情动作，以及管理员的反馈、能力与系统治理入口汇总为角色化队列。页面与只读 API 共用同一份聚合结果，按当前身份隔离数据源、限制条数并标记降级来源；返回内容不包含学生代码正文、姓名或联系方式等敏感字段。入口位于 `/action-center`，接口位于 `/api/action-center`。
+
 ### 教师端
 
 教师可以创建和编辑作业，维护测试用例和提交记录，组织班级与花名册，查看完成情况和知识点趋势。学生、教师和管理员使用不同的角色权限。
@@ -136,7 +198,9 @@ flowchart LR
     F --> G[修正、解释与再提交]
     G --> C
     E --> H[能力画像与知识点记录]
-    H --> I[教师学情视图]
+    H --> I[学生私有学习记忆]
+    I --> J[受限检索与 AI 辅导]
+    H --> K[教师班级知识覆盖]
 ~~~
 
 ## 在线体验
@@ -212,7 +276,7 @@ flowchart LR
 
 ### 环境要求
 
-- Python 3.8–3.13；当前锁定的 Flask/Werkzeug 2.2.3 组合在 Python 3.14 下存在已知的路由初始化兼容性错误。
+- Python 3.8–3.14（Flask/Werkzeug/Flask-Session 已升级至 2.3.x/0.8.0 以支持 Python 3.14；Python 3.8–3.13 仅声明支持，未实际验证）
 - C++ 评测需要可执行的 <code>g++</code>，并确保它在 <code>PATH</code> 中；
 - 开发环境可以使用 SQLite，生产环境需要配置 <code>DATABASE_URL</code>；
 - AI 引导、代码建议和部分学情分析需要智谱或 OpenAI API 密钥。
@@ -258,18 +322,16 @@ SECRET_KEY=replace-with-a-random-secret
 ZHIPU_API_KEY=
 OPENAI_API_KEY=
 
-# 密码找回和邮箱注册邮件（不配置时，管理员可在用户管理页生成一次性重置链接）
+# 密码找回邮件（不配置时，管理员可在用户管理页生成一次性重置链接）
 MAIL_SERVER=
 MAIL_PORT=587
 MAIL_USERNAME=
 MAIL_PASSWORD=
 MAIL_DEFAULT_SENDER=
 APP_BASE_URL=https://codesense.example.com
-EMAIL_VERIFICATION_TOKEN_TTL_MINUTES=30
-EMAIL_VERIFICATION_REQUEST_INTERVAL_SECONDS=60
 ~~~
 
-开发和测试配置会在启动时创建数据库表。生产配置要显式设置 <code>DATABASE_URL</code> 和 <code>SECRET_KEY</code>；生产 WSGI 默认跳过启动期建表和迁移，请先执行 <code>python database_maintenance.py</code>。不要把 <code>.env</code>、API 密钥或本地数据库文件提交到 Git。
+开发和测试配置会在启动时创建数据库表。生产配置要显式设置 <code>DATABASE_URL</code> 和 <code>SECRET_KEY</code>；生产 WSGI 默认跳过启动期建表和迁移，首次部署或数据库结构变化后请执行 <code>python database_maintenance.py</code>。仓库的 <code>update.sh</code> 会在重启应用前自动执行这项维护。不要把 <code>.env</code>、API 密钥或本地数据库文件提交到 Git。
 
 登录页同时提供学生名单注册和邮箱注册。邮箱注册不要求提前导入学生名单，账号创建后必须点击验证邮件中的链接才能登录；验证令牌只保存摘要，过期或重复发送后旧链接会自动失效。<code>AuthIdentity</code> 表为后续接入 Google、微信等社交登录保留统一的身份绑定位置。
 
@@ -302,7 +364,11 @@ python -m pip install -r requirements-test.txt
 python -m pytest tests -q
 ~~~
 
-> 兼容性边界：在 Python 3.14 下，当前 Flask/Werkzeug 2.2.3 组合会在路由初始化阶段触发 `ast.Str` 兼容性错误。本次仅记录边界，不升级框架依赖；如需支持 Python 3.14，应单独评审 Flask/Werkzeug 升级并执行完整回归。
+> 兼容性说明：Flask/Werkzeug 已从 2.2.3 升级至 2.3.x，Flask-Session 从 0.4.0 升级至 0.8.0，以支持 Python 3.14（ast.Str 在 3.12 废弃、Python 3.14 移除；Flask 2.3 移除了 `session_cookie_name` 应用属性，旧版 Flask-Session 0.4.0 依赖该属性导致初始化失败）。Flask-Session 0.8.0 使用标准的 session modified 检测机制，无需额外钩子。
+>
+> - **声明支持**：Python 3.8–3.14
+> - **已验证启动**：Python 3.14.7（`python run.py` 启动成功，`/login` 返回 200）；Python 3.8–3.13 未实际验证
+> - **专项回归通过**：`tests/test_demo_guided_learning.py` 9 个用例、`tests/test_compile_error_scoring.py` 4 个用例、`tests/test_stage3_forum_trace.py` 6 个用例；完整测试套件待执行
 
 涉及 C++ 评测的测试需要 <code>g++</code>；涉及真实 AI 服务的测试还需要相应环境变量。
 
@@ -333,7 +399,6 @@ gunicorn -c gunicorn_config.py wsgi:application
 | <code>MAIL_SERVER</code> / <code>MAIL_PORT</code> / <code>MAIL_USERNAME</code> / <code>MAIL_PASSWORD</code> / <code>MAIL_DEFAULT_SENDER</code> | 忘记密码邮件服务配置；敏感值只放服务器环境变量或受限配置文件 |
 | <code>APP_BASE_URL</code> | 邮件和管理员重置链接使用的公开 HTTPS 地址 |
 | <code>PASSWORD_RESET_TOKEN_TTL_MINUTES</code> / <code>PASSWORD_RESET_REQUEST_INTERVAL_SECONDS</code> | 重置链接有效期和重复申请冷却时间 |
-| <code>EMAIL_VERIFICATION_TOKEN_TTL_MINUTES</code> / <code>EMAIL_VERIFICATION_REQUEST_INTERVAL_SECONDS</code> | 邮箱验证链接有效期和重复发送冷却时间 |
 | <code>AI_PROVIDER_ORDER</code> | 多 provider 的优先顺序，例如 <code>zhipu,openai</code> |
 | <code>ZHIPU_MODEL</code> / <code>OPENAI_MODEL</code> | 各 provider 使用的模型 |
 | <code>AI_RETRY_ATTEMPTS</code> | 网络错误、限流和 5xx 的最大重试次数 |
@@ -359,6 +424,10 @@ gunicorn -c gunicorn_config.py wsgi:application
 | --- | --- | --- |
 | <code>/api/submit</code> | <code>POST</code> | 提交代码并开始评测 |
 | <code>/api/code_advice</code> | <code>POST</code> | 获取代码建议 |
+| <code>/student/rebuild-learning-memory</code> | <code>POST</code> | 更新当前学生的私有学习记忆 |
+| <code>/student/learning-memory/revoke</code> | <code>POST</code> | 撤回当前学生的一条学习记忆来源 |
+| <code>/teacher/knowledge-focus/&lt;knowledge_point&gt;</code> | <code>GET</code> | 查看教师可管理的针对性练习 |
+| <code>/teacher/classes/&lt;class_id&gt;/learning-memory-reminder</code> | <code>POST</code> | 向指定班级中需要更新学习记忆的学生发送站内提醒 |
 | <code>/api/get_programming_guidance</code> | <code>POST</code> | 获取编程引导 |
 | <code>/api/stream/ability-analysis</code> | <code>GET</code> | 流式获取能力分析 |
 | <code>/forgot-password</code> | <code>GET/POST</code> | 申请密码重置链接 |
@@ -387,7 +456,7 @@ CodeSense 使用语义化版本号：
 - <code>MINOR</code>：向后兼容的功能增加；
 - <code>PATCH</code>：向后兼容的问题修复和小幅调整。
 
-当前版本是 [v1.0.0](https://github.com/XiaoCow666/CodeSense/releases/tag/v1.0.0)，对应标准版首个正式发布。后续版本请同时更新 [CHANGELOG.md](CHANGELOG.md)，并使用同名 Git tag 和 GitHub Release。
+当前正式版本是 [v1.9.0](https://github.com/XiaoCow666/CodeSense/releases/tag/v1.9.0)。教师可从班级聚合信号选择练习或提醒；学生能在行动中心回到个人学习记忆入口。知识记忆与知识证据用于学习参考，分数由评测流程和教师判断决定。
 
 ## Star History
 

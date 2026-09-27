@@ -176,11 +176,24 @@ def consume_password_reset_token(raw_token, new_password):
         return None
 
     now = datetime.utcnow()
+    # ``with_for_update`` is ignored by SQLite and is only a best-effort
+    # guard on some MySQL configurations.  The conditional update is the
+    # actual one-time-use gate: concurrent requests can never both claim the
+    # same token successfully.
+    claimed = PasswordResetToken.query.filter(
+        PasswordResetToken.id == record.id,
+        PasswordResetToken.used_at.is_(None),
+        PasswordResetToken.revoked_at.is_(None),
+        PasswordResetToken.expires_at > now,
+    ).update({'used_at': now}, synchronize_session=False)
+    if claimed != 1:
+        db.session.rollback()
+        return None
+
     user.password = new_password
     user.password_changed_at = now
     # 使重置前的所有已登录会话失效，避免旧会话继续使用。
     user.current_session_id = None
-    record.used_at = now
     PasswordResetToken.query.filter(
         PasswordResetToken.user_id == user.student_id,
         PasswordResetToken.id != record.id,

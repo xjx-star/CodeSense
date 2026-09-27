@@ -1,6 +1,7 @@
 """
 身份验证和认证功能模块
 """
+import hmac
 import os
 from functools import wraps
 from flask import flash, redirect, url_for, request
@@ -65,15 +66,14 @@ def admin_password_required(f):
 
 
 def validate_admin_password(password):
-
-
     """验证管理员密码是否正确"""
-
-
-    admin_password = os.environ.get('ADMIN_PASSWORD') or 'admin123'
-
-
-    return password == admin_password
+    admin_password = os.environ.get('ADMIN_PASSWORD')
+    # 未配置管理员口令时必须拒绝，而不是回退到公开可猜的默认值。
+    return bool(
+        admin_password
+        and isinstance(password, str)
+        and hmac.compare_digest(password, admin_password)
+    )
 
 
 
@@ -109,4 +109,18 @@ def teacher_required(f):
     return decorated_function
 
 
- 
+def student_required(f):
+    """Restrict student-learning endpoints to real student accounts."""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not current_user.is_authenticated:
+            flash('请先登录', 'warning')
+            return redirect(url_for('auth.login', next=request.url))
+
+        if getattr(current_user, 'usertype', None) != '学生':
+            flash('该功能仅对学生账号开放', 'danger')
+            return redirect(url_for('main.home'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+

@@ -273,6 +273,8 @@ def test_stage3_forum_message_forwards_routing_metadata_and_filters_private_fiel
     assert response.json["primary"]["message"] == "公开主回复"
     assert response.json["user_goal"]["id"] == "stage3-teach-and-repair"
     assert response.json["user_goal"]["progress_percent"] == 0
+    assert response.json["session_lifecycle"]["id"] == session_id
+    assert response.json["session_lifecycle"]["status"] == "active"
     assert response.json["forum_state"]["coverage_summary"]["ready_for_code"] is False
     assert response.json["interventions"] == []
     dumped = json.dumps(response.json, ensure_ascii=False)

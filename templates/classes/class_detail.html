@@ -202,6 +202,20 @@
                 {% if session.get('usertype') == '管理员' %}
                 <p class="mb-0">教师绑定码: <code class="text-white">{{ cls.teacher_bind_code or '未生成' }}</code></p>
                 {% endif %}
+                {% if session.get('usertype') in ['管理员', '教师'] %}
+                <p class="mb-0 mt-2">
+                    学生加入码:
+                    <code class="text-white" style="font-size:1.05rem;letter-spacing:.08em;">{{ cls.student_join_code or '未生成' }}</code>
+                    <small class="d-block" style="opacity:.82;">自由用户注册后输入此码即可加入本班级</small>
+                </p>
+                <form action="{{ url_for('classes.reset_student_join_code', class_id=cls.id) }}" method="POST"
+                    class="mt-2" onsubmit="return confirm('确定重置学生加入码吗？旧加入码将立即失效。');">
+                    {% if csrf_token is defined %}{{ csrf_token() }}{% endif %}
+                    <button type="submit" class="btn btn-sm btn-light">
+                        <i class="bi bi-arrow-clockwise"></i> 重置学生加入码
+                    </button>
+                </form>
+                {% endif %}
             </div>
             <div class="col-md-4 text-right">
                 {% if session.get('usertype') == '管理员' %}
@@ -211,6 +225,7 @@
                 <form action="{{ url_for('classes.reset_bind_code', class_id=cls.id) }}" method="POST"
                     class="d-inline"
                     onsubmit="return confirm('确定重置该班级绑定码吗？旧绑定码将立即失效。');">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <button type="submit" class="btn btn-warning">
                         <i class="bi bi-arrow-clockwise"></i> 重置绑定码
                     </button>
@@ -219,6 +234,7 @@
                 <form action="{{ url_for('classes.unbind_class', class_id=cls.id) }}" method="POST"
                     class="d-inline"
                     onsubmit="return confirm('确定解绑该班级吗？解绑后将不再显示在你的班级列表中。');">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <button type="submit" class="btn btn-light">
                         <i class="bi bi-link-45deg"></i> 解绑班级
                     </button>
@@ -231,6 +247,11 @@
         </div>
     </div>
 
+    {% if current_user.is_teacher and teacher_learning_actions %}
+    {% set teacher_learning_actions_title = '本班可执行教学动作' %}
+    {% include 'components/teacher_learning_actions.html' with context %}
+    {% endif %}
+
     <!-- 统计数据 -->
     <div class="stats-grid">
         <div class="stat-card">
@@ -239,7 +260,7 @@
         </div>
         <div class="stat-card">
             <div class="stat-value">{{ "%.1f"|format(stats.avg_score) }}</div>
-                <div class="stat-label">班级平均提交分（0–5）</div>
+                <div class="stat-label">班级平均提交分（0–100）</div>
         </div>
         <div class="stat-card">
             <div class="stat-value">{{ stats.total_submissions }}</div>
@@ -327,6 +348,7 @@
         <!-- 名单上传表单 -->
         <form action="{{ url_for('classes.import_students', class_id=cls.id) }}" method="POST"
             enctype="multipart/form-data" class="row g-2 align-items-end mb-4">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <div class="col-md-8">
                 <label for="studentFile" class="form-label fw-bold">上传名单文件</label>
                 <input type="file" class="form-control" id="studentFile" name="student_file"
@@ -405,7 +427,7 @@
         <div class="d-flex justify-content-between align-items-start mb-3">
             <div>
                 <h4 class="mb-1">最近作业完成矩阵</h4>
-                <p class="text-muted mb-0">横向看作业完成率，纵向看学生是否连续缺交或低分。提交得分采用 0–5 分。</p>
+                <p class="text-muted mb-0">横向看作业完成率，纵向看学生是否连续缺交或低分。提交得分采用 0–100 分。</p>
             </div>
             <div class="matrix-legend">
                 <span><i class="legend-dot legend-excellent"></i>优秀</span>
@@ -440,7 +462,7 @@
                             <div class="matrix-cell {{ cell.status_class }}">
                                 {{ cell.status }}
                                 {% if cell.best_score is not none %}
-                                <div class="small">{{ "%.1f"|format(cell.best_score|float) }}/5</div>
+                                <div class="small">{{ "%.1f"|format(cell.best_score|float) }}</div>
                                 {% endif %}
                             </div>
                         </td>
@@ -491,8 +513,8 @@
                         <th>学生</th>
                         <th>学号</th>
                         <th>状态</th>
-                        <th>能力综合分（0–5）</th>
-                        <th>提交得分（0–5）</th>
+                        <th>能力综合分（0–100）</th>
+                        <th>提交得分（0–100）</th>
                         <th>提交次数</th>
                         <th>最近提交</th>
                         <th>风险标签</th>
@@ -521,15 +543,15 @@
                             </span>
                         </td>
                         <td>
-                            <span class="badge badge-score-{{ student.user_ascore|round|int }}">
-                                {{ "%.1f"|format(student.user_ascore|float) }}/5
+                            <span class="badge {% if student.user_ascore >= 80 %}bg-success{% elif student.user_ascore >= 60 %}bg-warning text-dark{% else %}bg-danger{% endif %}">
+                                {{ "%.1f"|format(student.user_ascore|float) }}
                             </span>
                         </td>
                         <td>
                             {% if row.latest_score is not none %}
                             <span
-                                class="badge {% if row.latest_score >= 4 %}bg-success{% elif row.latest_score >= 3 %}bg-warning text-dark{% else %}bg-danger{% endif %}">
-                                {{ "%.1f"|format(row.latest_score|float) }}/5
+                                class="badge {% if row.latest_score >= 80 %}bg-success{% elif row.latest_score >= 60 %}bg-warning text-dark{% else %}bg-danger{% endif %}">
+                                {{ "%.1f"|format(row.latest_score|float) }}
                             </span>
                             {% else %}
                             -
